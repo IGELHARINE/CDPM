@@ -1,0 +1,62 @@
+{
+  "name": "cdpm",
+  "version": "0.1.0",
+  "description": "CDP Manager - an MCP server that runs Chrome slots 1-30 over CDP so multiple Claude agents can share and drive them by number",
+  "type": "module",
+  "bin": {
+    "cdpm": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "README.ko.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
+    "prepare": "tsc -p tsconfig.json && node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
+    "build:test": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
+    "test": "npm run build:test && node --test --test-concurrency=1 \"dist-test/test/unit/*.test.js\"",
+    "test:integration": "npm run build:test && node --test --test-concurrency=1 \"dist-test/test/integration/*.test.js\"",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "cdp",
+    "chrome",
+    "devtools-protocol",
+    "claude",
+    "multi-agent",
+    "browser-automation"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "os": [
+    "win32",
+    "darwin",
+    "linux"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "typescript": "6.0.3"
+  },
+  "optionalDependencies": {
+    "koffi": "3.3.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IGELHARINE/CDPM.git"
+  },
+  "homepage": "https://github.com/IGELHARINE/CDPM#readme",
+  "bugs": {
+    "url": "https://github.com/IGELHARINE/CDPM/issues"
+  }
+}
