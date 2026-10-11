@@ -57,21 +57,28 @@ export function drawScript(slot: number, color: string): string {
   })()`;
 }
 
-/** 저장해 둔 그림, 없으면 이 슬롯의 빈 탭(about:blank)에서 그려 저장. 빈 탭이 없으면 기본 그리기. */
-async function dockImage(slot: number): Promise<string> {
+/**
+ * 저장해 둔 그림, 없으면 이 슬롯의 탭에서 Chrome 캔버스로 그려 저장 (맥 글꼴로 그려짐).
+ * 켜면서 시작 주소를 바로 열면 빈 탭이 없으므로, 빈 탭이 없으면 열려 있는 일반 페이지 탭에서 그린다
+ * (페이지와 분리된 실행 공간이라 페이지에는 영향 없음). 그래도 못 그리면 예비 그림을 주고 fallback=true.
+ */
+async function dockImage(slot: number): Promise<{ b64: string; fallback: boolean }> {
   const file = pngPath(slot);
-  if (fs.existsSync(file)) return fs.readFileSync(file).toString('base64');
+  if (fs.existsSync(file)) return { b64: fs.readFileSync(file).toString('base64'), fallback: false };
   let b64: string | undefined;
-  const blank = (await listPages(slot, 3000).catch(() => [])).find((p) => p.url === 'about:blank');
-  if (blank) {
-    const s = await pageSession(slot, blank.id).catch(() => undefined);
+  const pages = await listPages(slot, 3000).catch(() => []);
+  // 빈 탭 먼저, 없으면 일반 페이지 (chrome:// 같은 내부 페이지는 그릴 수 없음)
+  const candidates = [...pages.filter((p) => p.url === 'about:blank'), ...pages.filter((p) => /^(https?|file|data):/i.test(p.url))];
+  for (const page of candidates) {
+    const s = await pageSession(slot, page.id).catch(() => undefined);
     const r = await s?.evaluate<string>(drawScript(slot, colorOf(slot)), { awaitPromise: true, timeoutMs: 5000 }).catch(() => undefined);
-    if (typeof r?.value === 'string' && r.value.length > 100) b64 = r.value;
+    if (typeof r?.value === 'string' && r.value.length > 100) { b64 = r.value; break; }
   }
-  if (!b64) return encodePng(renderIcon(slot, SIZE), SIZE).toString('base64'); // 저장하지 않음: 다음에 빈 탭이 있으면 제대로 그린다
+  // 저장하지 않음: 다음에 붙을 때 다시 제대로 그린다
+  if (!b64) return { b64: encodePng(renderIcon(slot, SIZE), SIZE).toString('base64'), fallback: true };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, Buffer.from(b64, 'base64'));
-  return b64;
+  return { b64, fallback: false };
 }
 
 /** 이 프로세스가 이미 아이콘을 넣은 Chrome (슬롯:PID) */
@@ -83,11 +90,12 @@ export async function applyDock(slot: number, pid: number | undefined): Promise<
   const key = `${slot}:${pid}`;
   if (applied.has(key)) return;
   try {
-    const image = await dockImage(slot);
+    const { b64: image, fallback } = await dockImage(slot);
     const conn = await browserConnection(slot);
     await conn.send('Browser.setDockTile', { image }, 5000);
     if (applied.size > 200) applied.clear(); // 끝난 Chrome(pid)의 기록이 쌓이지 않게
-    applied.add(key);
+    // 예비 그림이면 기록하지 않는다: 다음에 붙을 때 다시 제대로 그려 바꾼다
+    if (!fallback) applied.add(key);
   } catch {
     // 다음에 붙을 때 다시 시도
   }
