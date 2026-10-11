@@ -1,6 +1,7 @@
 import { CdpmError } from '../errors.js';
 
 type Handler = (params: any) => void;
+type SessionHandler = (params: any, sessionId: string) => void;
 
 interface Pending {
   resolve: (v: any) => void;
@@ -17,6 +18,8 @@ export class CdpConnection {
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private handlers = new Map<string, Set<Handler>>();
+  /** 이 연결에 자동으로 붙은 하위 대상(sessionId가 붙은 메시지)의 이벤트. 탭 자신의 이벤트와 섞지 않는다 */
+  private sessionHandlers = new Map<string, Set<SessionHandler>>();
   private closedHandlers = new Set<() => void>();
   closed = false;
 
@@ -45,7 +48,7 @@ export class CdpConnection {
     });
   }
 
-  send<T = any>(method: string, params: Record<string, unknown> = {}, timeoutMs = 30_000): Promise<T> {
+  send<T = any>(method: string, params: Record<string, unknown> = {}, timeoutMs = 30_000, sessionId?: string): Promise<T> {
     if (this.closed) return Promise.reject(new CdpmError(`CDP 연결이 끊어졌습니다 (${method}).`));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
@@ -57,13 +60,21 @@ export class CdpConnection {
         ));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer, method });
-      this.ws.send(JSON.stringify({ id, method, params }));
+      this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
   }
 
   on(event: string, handler: Handler): () => void {
     let set = this.handlers.get(event);
     if (!set) this.handlers.set(event, (set = new Set()));
+    set.add(handler);
+    return () => set!.delete(handler);
+  }
+
+  /** 하위 대상(자동으로 붙은 iframe 등)의 이벤트만 받는다. */
+  onSession(event: string, handler: SessionHandler): () => void {
+    let set = this.sessionHandlers.get(event);
+    if (!set) this.sessionHandlers.set(event, (set = new Set()));
     set.add(handler);
     return () => set!.delete(handler);
   }
@@ -111,6 +122,16 @@ export class CdpConnection {
       clearTimeout(p.timer);
       if (msg.error) p.reject(new CdpmError(`${p.method} 실패: ${msg.error.message}`));
       else p.resolve(msg.result);
+      return;
+    }
+    if (msg.method && msg.sessionId) {
+      for (const h of this.sessionHandlers.get(msg.method) ?? []) {
+        try {
+          h(msg.params, msg.sessionId);
+        } catch {
+          // 핸들러 오류는 연결에 영향 주지 않음
+        }
+      }
       return;
     }
     if (msg.method) {

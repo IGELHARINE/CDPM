@@ -39,6 +39,22 @@ const PAGES: Record<string, string> = {
 <iframe id="x" title="다른 사이트 프레임" style="width:400px;height:100px"></iframe>
 <script>document.getElementById('x').src = 'http://localhost:' + location.port + '/xinner';</script>
 </body></html>`,
+  '/xblock': `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>iframe 막기</title></head><body>
+<iframe id="x" width="300" height="80"></iframe>
+<script>document.getElementById('x').src = 'http://localhost:' + location.port + '/xtracker';</script>
+</body></html>`,
+  '/xtracker': `<!doctype html><html lang="ko"><head><meta charset="utf-8"></head><body>추적 iframe
+<script>let n = 0; setInterval(() => { new Image().src = '/tracker.png?n=' + (n++) + '&t=' + Date.now(); }, 200);</script>
+</body></html>`,
+  '/numform': `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>숫자 폼</title></head><body>
+<form onsubmit="event.preventDefault(); document.getElementById('r').textContent = '제출됨'">
+<label>숫자만 <input id="num" oninput="this.value = this.value.replace(/[^0-9]/g, '')"></label>
+<label>이름 <input id="nm"></label>
+<button>보내기</button></form><p id="r">미제출</p>
+</body></html>`,
+  '/twice': `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>두 번 요청</title></head><body>
+<button onclick="fetch('/api/hang?slow=1'); setTimeout(() => fetch('/api/hang?n=2').then(r => r.json()).then(d => (document.getElementById('o').textContent = d.n)), 200)">두 번 요청</button><p id="o"></p>
+</body></html>`,
   '/xinner': `<!doctype html><html lang="ko"><head><meta charset="utf-8"></head><body>
 <label>교차 입력 <input id="i" oninput="document.getElementById('o').textContent='교차 값: '+this.value"></label>
 <button onclick="document.getElementById('o').textContent+=' / 교차 눌림'">교차 버튼</button><p id="o">교차 처음</p>
@@ -64,6 +80,9 @@ const PAGES: Record<string, string> = {
 <script>setTimeout(()=>{document.body.insertAdjacentHTML('beforeend','<p>늦게 나타남</p>')},800)</script></body></html>`,
 };
 
+/** 시험 서버가 받은 요청 수 (요청 막기 확인용) */
+export const hits: Record<string, number> = {};
+
 export async function startSite(): Promise<{ url: string; close: () => Promise<void> }> {
   const server = http.createServer((req, res) => {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
@@ -74,6 +93,18 @@ export async function startSite(): Promise<{ url: string; close: () => Promise<v
     if (path === '/api/search') {
       const q = new URL(req.url ?? '/', 'http://x').searchParams.get('q');
       setTimeout(() => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ q, items: [{ name: '사과', price: 1200 }, { name: '풋사과', price: 900 }] })), 300);
+      return;
+    }
+    if (path === '/tracker.png') {
+      hits.tracker = (hits.tracker ?? 0) + 1;
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' }).end();
+      return;
+    }
+    if (path === '/api/hang') {
+      // slow=1이면 15초 동안 응답하지 않음 (끝나지 않은 같은 주소 요청)
+      const slow = new URL(req.url ?? '/', 'http://x').searchParams.get('slow');
+      const done = () => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ n: slow ? 'slow' : 'fast' }));
+      if (slow) setTimeout(done, 15_000); else done();
       return;
     }
     if (path === '/api/data') {

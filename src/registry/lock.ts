@@ -18,6 +18,11 @@ export async function withLock<T>(fn: () => T | Promise<T>, timeoutMs = 10_000):
   return withFileLock(paths.lock(), fn, timeoutMs, '저장소 잠금을 얻지 못했어요 (다른 프로세스가 오래 쓰는 중).');
 }
 
+/** 슬롯 켜기·끄기를 여러 Claude 세션 사이에서 하나씩 (동시에 켜면 Chrome이 두 번 떠서 하나가 실패함). */
+export function withSlotLock<T>(slot: number, fn: () => T | Promise<T>): Promise<T> {
+  return withFileLock(paths.slotLock(slot), fn, 90_000, `다른 Claude 세션이 ${slot}번을 켜거나 끄는 중이에요. 잠시 뒤 다시 하세요.`);
+}
+
 /** 같은 방식의 잠금을 원하는 파일로 (예: 탭 하나를 여러 Claude 세션이 동시에 조작하지 않게). */
 export async function withFileLock<T>(lockPath: string, fn: () => T | Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });

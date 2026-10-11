@@ -34,6 +34,9 @@ export const DIALOG_NOTE = '내용을 보고 판단해서 browser_dialog로 직�
 /** 행동 도중 페이지가 알림창을 띄움. 행동 자체는 이루어진 것이므로 오류가 아니라 결과로 알린다. */
 export class DialogInterrupt extends CdpmError {}
 
+/** 입력한 뒤 실제 값이 넣으려던 글자와 다를 때 결과에 붙는 표시 (이때는 제출하지 않는다) */
+export const VALUE_MISMATCH = '[주의] 입력한 뒤 값이 예상과 달라요';
+
 /** 사용자가 슬롯을 멈춤: 하던 조작을 다음 입력을 보내기 직전에 그만둔다. */
 export class PausedInterrupt extends CdpmError {}
 
@@ -546,15 +549,18 @@ export async function type(s: PageSession, agent: string, ref: string, text: str
     let warn = '';
     if (info.editable !== 'none' && text) {
       const now = await callOn<string>(fs, obj, `function () { return ('value' in this && typeof this.value === 'string') ? this.value : (this.innerText || ''); }`);
-      if (!now.includes(text)) warn = `\n[주의] 입력한 뒤 값이 예상과 달라요 (현재 값: ${JSON.stringify(now.slice(0, 100))}). 사이트가 입력을 막거나 형식을 바꿨을 수 있어요.`;
+      if (!now.includes(text)) warn = `\n${VALUE_MISMATCH} (현재 값: ${JSON.stringify(now.slice(0, 100))}). 사이트가 입력을 막거나 형식을 바꿨을 수 있어요.`;
     } else if (info.editable === 'none') {
       warn = `\n[주의] [${ref}]는 입력칸이 아니라서(${info.tag}) 포커스된 곳에 글자를 보냈어요. 결과를 스냅샷으로 확인하세요.`;
     }
     let note = '';
     const human = await humanFocusNote(s);
-    if (submit) note = await settleAfter(s, () => pressCombo(s, parseCombo('Enter')!));
+    // 값이 다르면 잘못된 내용이 제출될 수 있으므로 Enter를 누르지 않는다
+    const mismatch = warn.includes(VALUE_MISMATCH);
+    if (submit && mismatch) note = '\n값이 달라서 제출(Enter)은 하지 않았어요. 값을 확인한 뒤 다시 입력하거나 browser_press_key로 제출하세요.';
+    else if (submit) note = await settleAfter(s, () => pressCombo(s, parseCombo('Enter')!));
     warn += human;
-    return `입력했어요: [${ref}] ${JSON.stringify(text)}${clear ? ' (기존 내용 지움)' : ''}${fast ? ' (빠른 입력: 키 이벤트 없이 한 번에)' : ''}${submit ? ' + Enter' : ''}${warn}${note}`;
+    return `입력했어요: [${ref}] ${JSON.stringify(text)}${clear ? ' (기존 내용 지움)' : ''}${fast ? ' (빠른 입력: 키 이벤트 없이 한 번에)' : ''}${submit && !mismatch ? ' + Enter' : ''}${warn}${note}`;
   } finally {
     await release(fs);
   }
@@ -906,8 +912,9 @@ export async function waitForResponse(s: PageSession, pattern: string, since: nu
   while (Date.now() < until) {
     const why = stop?.();
     if (why) throw new WaitStopped(why);
-    const hit = s.network.list().find((e) => e.startedAt >= since && !e.blockedBy && matches(e.url) && e.type !== 'Preflight');
-    if (hit && (hit.failed || (hit.status !== undefined && !s.network.inflight.has(hit.requestId)))) return hit;
+    const finished = (e: NetEntry) => !!e.failed || (e.status !== undefined && !s.network.inflight.has(e.requestId));
+    const hit = s.network.list().find((e) => e.startedAt >= since && !e.blockedBy && e.type !== 'Preflight' && matches(e.url) && finished(e));
+    if (hit) return hit;
     await sleep(50);
   }
   throw new CdpmError(`${timeoutSec}초 동안 주소에 ${JSON.stringify(pattern)}이(가) 들어간 응답이 오지 않았어요. browser_network로 실제 요청 주소를 확인하세요.`);

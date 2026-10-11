@@ -17,6 +17,8 @@ export const paths = {
   profile: (slot: number) => path.join(cdpmHome(), 'profiles', String(slot)),
   icon: (slot: number) => path.join(cdpmHome(), 'icons', `${slot}.ico`),
   config: () => path.join(cdpmHome(), 'config.json'),
+  /** 슬롯 켜기·끄기 잠금 (여러 Claude 세션이 같은 슬롯을 동시에 켜거나 끄지 않게) */
+  slotLock: (slot: number) => path.join(cdpmHome(), 'locks', `slot-${slot}.lock`),
   /** 탭 조작 잠금 (여러 Claude 세션이 같은 탭을 동시에 조작하지 않게) */
   tabLock: (slot: number, targetId: string) => path.join(cdpmHome(), 'locks', `${slot}-${targetId.replace(/[^A-Za-z0-9]/g, '')}.lock`),
 };

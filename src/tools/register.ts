@@ -9,6 +9,7 @@ import { ensureDownloadTracking, waitDownload } from '../cdp/downloads.js';
 import { probe } from '../cdp/targets.js';
 import { describeProxy, parseProxy, type ProxySpec } from '../chrome/proxy.js';
 import { CdpmError } from '../errors.js';
+import { withSlotLock } from '../registry/lock.js';
 import { pausedInfo, pausedRefusal, pauseSlots, resumeSlots } from '../pause.js';
 import * as act from '../page/actions.js';
 import { ancestorsOf, findLines, paginate, subtree, takeSnapshot } from '../page/snapshot.js';
@@ -386,7 +387,7 @@ export function registerTools(server: McpServer) {
     title: '슬롯 종료',
     description: '슬롯 Chrome을 정상 종료한다 (세션·쿠키 저장). 프로필(로그인 정보)은 지우지 않는다. 다른 에이전트가 최근에 썼으면 결과에 알려준다.',
     inputSchema: { slot: slotArg, agent: agentArg },
-  }, async ({ slot, agent }) => guard(async () => {
+  }, async ({ slot, agent }) => guard(() => withSlotLock(slot, async () => {
     const me = agent ?? DEFAULT_AGENT;
     if ((await probe(slot)).state !== 'chrome') {
       await forgetSlot(slot);
@@ -405,7 +406,7 @@ export function registerTools(server: McpServer) {
     for (let i = 0; rec?.pid && i < 50 && pidAlive(rec.pid); i++) await sleep(100);
     await forgetSlot(slot);
     return textResult([...warnings, `${slot}번 Chrome을 종료했어요. 프로필은 남아 있어서 다음에 켜면 로그인이 유지돼요.`].join('\n'));
-  }));
+  })));
 
   server.registerTool('browser_tabs', {
     title: '탭 목록',
@@ -432,6 +433,8 @@ export function registerTools(server: McpServer) {
     await attachSlot(slot);
     const browser = await browserConnection(slot);
     const target = url ? (/^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `https://${url}`) : 'about:blank';
+    const ext = act.externalScheme(target);
+    if (ext) throw new CdpmError(`${ext} 주소(${target.slice(0, 80)})는 열 수 없어요 (사용자 PC의 다른 프로그램이 실행돼요).`);
     // background: 사용자가 보고 있는 탭을 바꾸지 않는다.
     const { targetId } = await browser.send<{ targetId: string }>('Target.createTarget', { url: target, background: true });
     markCreated(targetId, me);
@@ -642,7 +645,9 @@ export function registerTools(server: McpServer) {
       if (pausedInfo(args.slot)) return stop(`${i + 1}번째 칸 전에 사용자가 슬롯을 멈춰서 멈췄어요.\n${pausedRefusal(args.slot)}`);
       if (i > 0 && (await href()) !== start) return stop(`페이지가 바뀌어서 ${i + 1}번째 칸 [${f.ref}]부터는 채우지 않았어요.`);
       try {
-        done.push(`${i + 1}. ${await act.type(s, agent, f.ref, f.text, true, false)}`);
+        const r = await act.type(s, agent, f.ref, f.text, true, false);
+        done.push(`${i + 1}. ${r}`);
+        if (r.includes(act.VALUE_MISMATCH)) return stop(`${i + 1}번째 칸 [${f.ref}]의 값이 넣으려던 글자와 달라서 멈췄어요 (제출하지 않았어요). 값을 확인한 뒤 다시 하세요.`);
       } catch (e) {
         if (e instanceof act.DialogInterrupt) throw e;
         return stop(`${i + 1}번째 칸 [${f.ref}]에서 멈췄어요: ${(e as Error).message}`);

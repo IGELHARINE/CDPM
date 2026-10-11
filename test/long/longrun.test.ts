@@ -14,7 +14,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'cli.js');
-const ROUNDS = Number(process.env.CDPM_LONG_ROUNDS) || 2000;
+const ROUNDS = Number(process.env.CDPM_LONG_ROUNDS) || 3000;
 const PORT_BASE = 29621;
 const INSPECT = 9349;
 
@@ -110,7 +110,7 @@ describe('오래 켜 두기', { timeout: 30 * 60_000 }, () => {
       const r2 = await call('browser_type', { agent, ref: q, text: 'abc', clear: true });
       const r3 = await call('browser_wait', { agent, enabled: go, timeout: 10 });
       if (!re || !go || !q || r1.err || r2.err || r3.err) errors++;
-      if (i === 250 || i % 500 === 0) {
+      if (i % 100 === 0) {
         const pc = await pageCounters();
         samples.push({ i, server: await serverHeap(), nodes: pc.nodes, page: pc.heap });
         const s = samples.at(-1)!;
@@ -118,12 +118,17 @@ describe('오래 켜 두기', { timeout: 30 * 60_000 }, () => {
       }
     }
     assert.equal(errors, 0, `오류 ${errors}회`);
-    // 처음에는 기록·캐시가 정해진 최대치까지 차므로, 절반이 지난 뒤부터 끝까지 늘지 않는지 본다 (계속 늘면 누수)
-    const later = samples.filter((x) => x.i >= ROUNDS / 2);
+    // 반복마다 새 에이전트 이름을 쓰므로, 서버 힙은 "안 보이는 에이전트 기록을 1분마다 정리"하는 톱니 모양으로 오르내린다.
+    // 누수면 뒤쪽의 꼭대기·바닥이 앞쪽보다 계속 높아지고, 톱니만 있으면 같다 → 앞 절반과 뒤 절반의 최고·최저를 비교한다.
+    // (처음 250회는 기록·캐시가 정해진 최대치까지 차는 구간이라 뺀다)
+    const front = samples.filter((x) => x.i >= 250 && x.i <= ROUNDS / 2);
+    const later = samples.filter((x) => x.i > ROUNDS / 2);
     const base = later[0];
     const last = later.at(-1)!;
-    const maxServer = Math.max(...later.map((x) => x.server));
-    assert.ok(maxServer - base.server < 15 && last.server - base.server < 5, `CDPM 서버 힙이 ${base.server.toFixed(1)} → ${last.server.toFixed(1)}MB(최대 ${maxServer.toFixed(1)})로 늘었어요`);
+    const hi = (xs: typeof samples) => Math.max(...xs.map((x) => x.server));
+    const lo = (xs: typeof samples) => Math.min(...xs.map((x) => x.server));
+    assert.ok(hi(later) - hi(front) < 4 && lo(later) - lo(front) < 4,
+      `CDPM 서버 힙이 계속 늘었어요: 앞 절반 ${lo(front).toFixed(1)}~${hi(front).toFixed(1)}MB → 뒤 절반 ${lo(later).toFixed(1)}~${hi(later).toFixed(1)}MB`);
     assert.ok(last.nodes <= base.nodes * 1.1 + 50, `페이지 요소가 ${base.nodes} → ${last.nodes}개로 늘었어요 (사라진 요소를 붙잡고 있음)`);
     assert.ok(last.page - base.page < 2, `페이지 힙이 ${base.page.toFixed(1)} → ${last.page.toFixed(1)}MB로 늘었어요`);
   });

@@ -49,6 +49,11 @@ function slotsFrom(args: string[]): number[] {
 }
 
 async function closeSlot(slot: number) {
+  const { withSlotLock } = await import('./registry/lock.js');
+  return withSlotLock(slot, () => closeSlotLocked(slot));
+}
+
+async function closeSlotLocked(slot: number) {
   const { probe } = await lazy.targets();
   const { browserConnection } = await lazy.sessions();
   const { forgetSlot } = await lazy.service();

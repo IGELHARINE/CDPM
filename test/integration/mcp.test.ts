@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { after, before, describe, it } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { startSite } from '../fixtures/site.js';
+import { hits, startSite } from '../fixtures/site.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'cli.js');
@@ -611,6 +611,87 @@ describe('CDPM MCP 통합', { timeout: 180_000 }, () => {
     assert.equal(rb.isError, false, rb.text);
     const v = (await call(a, 'browser_eval', { ...A, tab: 't1', expression: 'document.getElementById("q").value + "|" + document.getElementById("memo").value' })).text;
     assert.ok(v.includes(`${ta}|${tb}`), `섞임: ${v.slice(-120)}`);
+  });
+
+  it('입력한 값이 다르면 제출하지 않음 (browser_type submit, browser_fill)', async () => {
+    const A = { slot: SLOT, agent: 'A' };
+    await call(a, 'browser_navigate', { ...A, url: `${site.url}/numform` });
+    const snap = (await call(a, 'browser_snapshot', A)).text;
+    const num = ref(snap, /textbox "숫자만" \[(e\d+)\]/);
+    const nm = ref(snap, /textbox "이름" \[(e\d+)\]/);
+    // 숫자만 받는 칸에 글자를 섞어 넣고 Enter → 값이 달라서 제출하지 않아야 함
+    const t = await call(a, 'browser_type', { ...A, ref: num, text: 'ab12', submit: true, read: 'text' });
+    assert.match(t.text, /값이 예상과 달라요/);
+    assert.match(t.text, /제출\(Enter\)은 하지 않았어요/);
+    assert.match(t.text, /미제출/, '페이지가 제출되지 않음');
+    const f = await call(a, 'browser_fill', { ...A, fields: [{ ref: nm, text: '홍길동' }, { ref: num, text: 'x9' }], submit: 'Enter', read: 'text' });
+    assert.match(f.text, /값이 넣으려던 글자와 달라서 멈췄어요 \(제출하지 않았어요\)/, f.text);
+    assert.match(f.text, /미제출/);
+    // 값이 맞으면 제출됨
+    const ok = await call(a, 'browser_type', { ...A, ref: num, text: '42', clear: true, submit: true, read: 'text' });
+    assert.match(ok.text, /제출됨/, ok.text);
+  });
+
+  it('응답 기다리기: 앞의 끝나지 않은 같은 주소 요청이 뒤에 끝난 응답을 가리지 않음', async () => {
+    const A = { slot: SLOT, agent: 'A' };
+    await call(a, 'browser_navigate', { ...A, url: `${site.url}/twice` });
+    const snap = (await call(a, 'browser_snapshot', A)).text;
+    const t0 = Date.now();
+    await call(a, 'browser_click', { ...A, ref: ref(snap, /button "두 번 요청" \[(e\d+)\]/) });
+    const r = await call(a, 'browser_wait', { ...A, response: '/api/hang', timeout: 10 });
+    assert.match(r.text, /"n":"fast"/, r.text);
+    assert.ok(Date.now() - t0 < 8000, '15초짜리 요청을 기다리면 안 됨');
+  });
+
+  it('새 탭도 외부 프로그램 주소(mailto 등)는 거절', async () => {
+    const r = await call(a, 'browser_tab_new', { slot: SLOT, agent: 'A', url: 'mailto:someone@example.com' });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /mailto: 주소/);
+  });
+
+  it('요청 막기 규칙이 그 탭의 다른 사이트 iframe에도 걸림 (이미 떠 있는 것, 새로 생긴 것)', async () => {
+    const A = { slot: SLOT, agent: 'A' };
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    await call(a, 'browser_navigate', { ...A, url: `${site.url}/xblock` });
+    await wait(1200);
+    const before = hits.tracker ?? 0;
+    assert.ok(before > 0, 'iframe이 요청을 보내고 있어야 함');
+    // 이미 떠 있는 iframe에도 걸려야 함
+    await call(a, 'browser_block', { ...A, add: ['*tracker.png*'] });
+    await wait(400);
+    const c1 = hits.tracker ?? 0;
+    await wait(1500);
+    assert.ok((hits.tracker ?? 0) - c1 <= 1, `이미 떠 있는 iframe의 요청이 막히지 않음 (${(hits.tracker ?? 0) - c1}개 더 들어옴)`);
+    // 새로 생긴 iframe(새로고침)도 처음부터 막혀야 함
+    await call(a, 'browser_reload', A);
+    const c2 = hits.tracker ?? 0;
+    await wait(1500);
+    assert.ok((hits.tracker ?? 0) - c2 <= 1, '새로 생긴 iframe의 요청이 막히지 않음');
+    // 규칙을 풀면 다시 들어옴
+    await call(a, 'browser_block', { ...A, clear: true });
+    const c3 = hits.tracker ?? 0;
+    // 뒤 탭은 Chrome이 타이머를 1초에 한 번으로 늦추므로 넉넉히 기다린다
+    await wait(3000);
+    assert.ok((hits.tracker ?? 0) - c3 >= 2, '규칙을 풀었는데 요청이 다시 들어오지 않음');
+  });
+
+  it('두 세션이 같은 슬롯을 동시에 켜도 한 번만 뜨고 둘 다 성공 (슬롯 잠금)', async () => {
+    const slot = SLOT + 7;
+    const [ra, rb] = await Promise.all([
+      call(a, 'browser_launch', { slot, agent: 'A', headless: true }),
+      call(b, 'browser_launch', { slot, agent: 'B', headless: true }),
+    ]);
+    assert.equal(ra.isError, false, ra.text);
+    assert.equal(rb.isError, false, rb.text);
+    const launched = [ra.text, rb.text].filter((t) => /켰어요/.test(t)).length;
+    const attached = [ra.text, rb.text].filter((t) => /이미 떠 있어요/.test(t)).length;
+    assert.equal(launched, 1, `한 번만 켜야 함: ${ra.text.slice(-80)} | ${rb.text.slice(-80)}`);
+    assert.equal(attached, 1);
+    const [ca, cb] = await Promise.all([
+      call(a, 'browser_close', { slot, agent: 'A' }),
+      call(b, 'browser_close', { slot, agent: 'B' }),
+    ]);
+    assert.equal(ca.isError || cb.isError, false, ca.text + cb.text);
   });
 
   it('여러 슬롯을 한 번에 작은 번호부터 켬 (count)', async () => {

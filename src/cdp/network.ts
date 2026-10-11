@@ -40,6 +40,8 @@ export class NetworkRecorder {
   /** 아직 끝나지 않은 요청 */
   readonly inflight = new Set<string>();
   rules: BlockRule[] = [];
+  /** 규칙이 있는 동안 자동으로 붙은 하위 대상(다른 사이트 iframe 등). 같은 규칙을 건다 */
+  private children = new Set<string>();
 
   constructor(private readonly conn: CdpConnection) {
     conn.on('Network.requestWillBeSent', (p) => {
@@ -85,14 +87,41 @@ export class NetworkRecorder {
       e.failed = p.blockedReason ? `${p.errorText} (${p.blockedReason})` : p.errorText;
       e.durationMs = this.elapsed(e, p.timestamp);
     });
-    conn.on('Fetch.requestPaused', (p) => {
-      // Fetch 패턴에 걸린 요청 = 막을 요청
-      const rule = this.rules.find((r) => wildcard(r.pattern).test(p.request.url));
-      const e = p.networkId ? this.byId.get(p.networkId) : undefined;
-      if (e && rule) e.blockedBy = rule.pattern;
-      if (rule) void conn.send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'BlockedByClient' }).catch(() => undefined);
-      else void conn.send('Fetch.continueRequest', { requestId: p.requestId }).catch(() => undefined);
-    });
+    conn.on('Fetch.requestPaused', (p) => this.onPaused(p));
+    // 다른 사이트 iframe은 Chrome에서 별도 대상이라 탭에 건 Fetch가 닿지 않는다.
+    // 규칙이 있는 동안에는 자동으로 붙어서(요청을 보내기 전에 멈춘 채로) 같은 규칙을 건다. 그 안의 iframe도 같은 방식으로.
+    const attached = (p: any) => void this.onChild(p.sessionId);
+    conn.on('Target.attachedToTarget', attached);
+    conn.onSession('Target.attachedToTarget', attached);
+    conn.onSession('Fetch.requestPaused', (p, sid) => this.onPaused(p, sid));
+    const detached = (p: any) => this.children.delete(p.sessionId);
+    conn.on('Target.detachedFromTarget', detached);
+    conn.onSession('Target.detachedFromTarget', detached);
+  }
+
+  private onPaused(p: any, sessionId?: string) {
+    // Fetch 패턴에 걸린 요청 = 막을 요청
+    const rule = this.rules.find((r) => wildcard(r.pattern).test(p.request.url));
+    const e = !sessionId && p.networkId ? this.byId.get(p.networkId) : undefined;
+    if (e && rule) e.blockedBy = rule.pattern;
+    if (rule) void this.conn.send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'BlockedByClient' }, 5000, sessionId).catch(() => undefined);
+    else void this.conn.send('Fetch.continueRequest', { requestId: p.requestId }, 5000, sessionId).catch(() => undefined);
+  }
+
+  private fetchPatterns() {
+    return { patterns: this.rules.map((r) => ({ urlPattern: r.pattern, requestStage: 'Request' })) };
+  }
+
+  /** 자동으로 붙은 하위 대상: 규칙을 걸고, 그 안의 iframe에도 붙게 한 뒤, 멈춰 있던 대상을 풀어 준다. */
+  private async onChild(sessionId: string) {
+    this.children.add(sessionId);
+    const send = (m: string, p: Record<string, unknown> = {}) => this.conn.send(m, p, 5000, sessionId).catch(() => undefined);
+    if (this.rules.length) {
+      await send('Network.setCacheDisabled', { cacheDisabled: true });
+      await send('Fetch.enable', this.fetchPatterns());
+      await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+    }
+    await send('Runtime.runIfWaitingForDebugger');
   }
 
   private elapsed(e: NetEntry, monoSec: number): number | undefined {
@@ -130,11 +159,18 @@ export class NetworkRecorder {
     await this.conn.send('Network.setCacheDisabled', { cacheDisabled: rules.length > 0 }, 5000).catch(() => undefined);
     if (!rules.length) {
       await this.conn.send('Fetch.disable', {}, 5000).catch(() => undefined);
+      // 하위 대상의 규칙도 풀고 자동으로 붙기를 멈춘다
+      for (const sid of this.children) {
+        await this.conn.send('Fetch.disable', {}, 5000, sid).catch(() => undefined);
+        await this.conn.send('Network.setCacheDisabled', { cacheDisabled: false }, 5000, sid).catch(() => undefined);
+      }
+      await this.conn.send('Target.setAutoAttach', { autoAttach: false, waitForDebuggerOnStart: false, flatten: true }, 5000).catch(() => undefined);
       return;
     }
-    await this.conn.send('Fetch.enable', {
-      patterns: rules.map((r) => ({ urlPattern: r.pattern, requestStage: 'Request' })),
-    }, 5000);
+    await this.conn.send('Fetch.enable', this.fetchPatterns(), 5000);
+    // 이미 붙어 있는 하위 대상은 새 규칙으로 바꾸고, 아직이면 붙는다 (이미 떠 있는 iframe도 이때 붙음)
+    for (const sid of this.children) await this.conn.send('Fetch.enable', this.fetchPatterns(), 5000, sid).catch(() => undefined);
+    await this.conn.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, 5000).catch(() => undefined);
   }
 }
 

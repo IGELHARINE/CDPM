@@ -4,6 +4,7 @@ import { describeProxy } from './chrome/proxy.js';
 import { browserConnection, dropSlotConnections, hasLiveBrowserConnection, pageSession } from './cdp/sessions.js';
 import { listPages, probe, type PageTarget } from './cdp/targets.js';
 import { CdpmError } from './errors.js';
+import { withSlotLock } from './registry/lock.js';
 import { newSlotRecord, readRegistry, updateRegistry, type SlotRecord, type TabRecord } from './registry/store.js';
 import { MAX_SLOT, portOf } from './slots.js';
 import { applyDock, DOCK_SUPPORTED } from './taskbar/dock.js';
@@ -79,7 +80,12 @@ function portBusy(slot: number, detail: string) {
 }
 
 /** 사용자가 켜라고 했을 때만 부른다. 이미 떠 있으면 붙기만 한다. */
-export async function launchSlot(slot: number, agent: string, opts: LaunchOptions = {}): Promise<EnsureResult> {
+export function launchSlot(slot: number, agent: string, opts: LaunchOptions = {}): Promise<EnsureResult> {
+  // 여러 세션이 같은 슬롯을 동시에 켜면 둘 다 "비어 있음"으로 보고 Chrome을 두 번 띄운다 → 슬롯 잠금 안에서 하나씩
+  return withSlotLock(slot, () => launchSlotLocked(slot, agent, opts));
+}
+
+async function launchSlotLocked(slot: number, agent: string, opts: LaunchOptions): Promise<EnsureResult> {
   const p = await probeSure(slot);
   if (p.state === 'other') throw portBusy(slot, p.detail);
   if (p.state === 'chrome') {

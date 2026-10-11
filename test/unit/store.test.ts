@@ -217,6 +217,22 @@ describe('자동 설정 (업데이트 때 항목별 판단)', () => {
     assert.equal(store.has('b'), false);
   });
 
+  it('넣지 못한 항목이 있으면 이 버전을 끝난 것으로 적지 않고 다음에 다시', () => {
+    const file = tmpState();
+    const store = new Set<string>();
+    const calls: string[] = [];
+    let broken = true; // 처음에는 설정 파일이 깨져 있어서 안 들어감
+    const flaky = { name: 'x', present: () => store.has('x'), apply: () => { calls.push('x'); if (!broken) store.add('x'); return ''; } };
+    runAutoSetup([flaky], file, 7);
+    assert.deepEqual(calls, ['x']);
+    broken = false;
+    runAutoSetup([flaky], file, 7); // 같은 버전이어도 다시 시도
+    assert.deepEqual(calls, ['x', 'x']);
+    assert.equal(store.has('x'), true);
+    runAutoSetup([flaky], file, 7); // 이제 끝났으니 다시 하지 않음
+    assert.deepEqual(calls, ['x', 'x']);
+  });
+
   it('예전 표시 파일(auto-setup-vN.done)만 있는 사용자도 지운 것은 되살리지 않음', () => {
     const file = tmpState();
     fs.writeFileSync(path.join(path.dirname(file), 'auto-setup-v9.done'), 'x');
