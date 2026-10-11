@@ -37,6 +37,53 @@ export class DialogInterrupt extends CdpmError {}
 /** 입력한 뒤 실제 값이 넣으려던 글자와 다를 때 결과에 붙는 표시 (이때는 제출하지 않는다) */
 export const VALUE_MISMATCH = '[주의] 입력한 뒤 값이 예상과 달라요';
 
+// ---------- 에이전트 조작 동안에만: OS 창·인쇄 창 막기 ----------
+// 사람이 직접 누른 것은 평소처럼 떠야 하므로, CDPM이 조작하는 그 순간에만 켜고 끝나면 바로 푼다.
+// - 파일 선택 창: 클릭뿐 아니라 키(파일 칸에서 Enter·Space)나 폼 제출 등 어떤 경로로 열려도 OS 창 대신 가로챈다.
+// - 인쇄: window.print()는 인쇄 미리보기를 띄우고 탭을 멈추게 한다(CDP로 닫을 수 없음). 그 순간에만 페이지의 print를 잠깐 막는다.
+const PRINT_GUARD_KEY = '__cdpmPrintGuard';
+const PRINT_GUARD_ON = `(() => { const k = '${PRINT_GUARD_KEY}'; if (window[k]) return; const orig = window.print; const g = { orig, hit: 0 };
+  Object.defineProperty(window, k, { value: g, configurable: true });
+  window.print = function () { g.hit++; }; })()`;
+const PRINT_GUARD_OFF = `(() => { const k = '${PRINT_GUARD_KEY}'; const g = window[k]; if (!g) return 0; window.print = g.orig; delete window[k]; return g.hit; })()`;
+
+/** 에이전트 조작 하나를 감싼다. 조작 중에 파일 선택 창이 열리려 했거나 인쇄를 막았으면 그 안내를 돌려준다. */
+export async function guardAction<T>(s: PageSession, fn: () => Promise<T>): Promise<{ value: T; note: string }> {
+  const started = Date.now();
+  let chooser: { backendNodeId: number; mode: string } | undefined;
+  const off = s.conn.on('Page.fileChooserOpened', (p) => { chooser = p; });
+  // 알림창이 떠 있으면 탭이 응답하지 않으므로 건너뛴다 (그때는 조작도 거의 못 함)
+  const on = !s.dialog;
+  if (on) {
+    await s.send('Page.setInterceptFileChooserDialog', { enabled: true }, 1500).catch(() => undefined);
+    // 페이지 쪽(main world)의 print만 잠깐 바꾼다. Runtime.enable은 쓰지 않는다.
+    await s.send('Runtime.evaluate', { expression: PRINT_GUARD_ON, returnByValue: true }, 1500).catch(() => undefined);
+  }
+  let value: T;
+  let printed = 0;
+  const undo = async () => {
+    await s.send('Page.setInterceptFileChooserDialog', { enabled: false }, 1500).catch(() => undefined);
+    const r = await s.send<{ result?: { value?: number } }>('Runtime.evaluate', { expression: PRINT_GUARD_OFF, returnByValue: true }, 1500).catch(() => undefined);
+    return Number(r?.result?.value) || 0;
+  };
+  try {
+    value = await fn();
+  } finally {
+    off();
+    if (on && !s.dialog) printed = await undo();
+    // 조작 도중 알림창이 떠서 지금은 풀 수 없으면, 알림창이 닫히는 순간 푼다 (켜 둔 채 남으면 사람이 누른 파일 칸·인쇄까지 막힘)
+    else if (on) void s.conn.waitFor('Page.javascriptDialogClosed', () => true, 6 * 3600_000).then((p) => (p ? undo() : undefined));
+  }
+  let note = '';
+  // 클릭이 이미 안내했으면(같은 창) 다시 붙이지 않는다
+  if (chooser && !(s.fileChooser && s.fileChooser.at >= started)) {
+    s.fileChooser = { fs: s, backendNodeId: chooser.backendNodeId, multiple: chooser.mode === 'selectMultiple', at: Date.now() };
+    note += `\n파일 선택 창이 열리려 해서 사용자 화면에 띄우지 않았어요. browser_upload(files=[파일 경로${s.fileChooser.multiple ? ', 여러 개 가능' : ''}])로 바로 넣으세요.`;
+  }
+  if (printed) note += '\n페이지가 인쇄 창을 열려고 해서 막았어요 (탭이 멈추지 않게). PDF로 저장하려면 browser_pdf를 쓰세요.';
+  return { value, note };
+}
+
 /** 사용자가 슬롯을 멈춤: 하던 조작을 다음 입력을 보내기 직전에 그만둔다. */
 export class PausedInterrupt extends CdpmError {}
 
@@ -141,13 +188,15 @@ const release = async (s: PageSession) => {
 
 // ---------- 요소 정보 ----------
 
-const DATE_LIKE = ['date', 'time', 'datetime-local', 'month', 'week'];
+/** 누르면 선택 창(달력·시계·색)이 뜨는 입력칸. 클릭하지 않고 browser_type으로 값을 넣는다 */
+const DATE_LIKE = ['date', 'time', 'datetime-local', 'month', 'week', 'color'];
 const DATE_FORMAT: Record<string, string> = {
   date: 'YYYY-MM-DD (예: 2026-10-08)',
   time: 'HH:MM 24시간 (예: 19:30)',
   'datetime-local': 'YYYY-MM-DDTHH:MM (예: 2026-10-08T19:30)',
   month: 'YYYY-MM (예: 2026-10)',
   week: 'YYYY-Www (예: 2026-W41)',
+  color: '#RRGGBB (예: #ff0000)',
 };
 
 interface ElementInfo {
@@ -386,6 +435,9 @@ export async function click(s: PageSession, agent: string, ref: string, double =
     if (info.select) {
       throw new CdpmError(`클릭하지 않았어요: [${ref}]는 드롭다운(<select>)이라 누르면 사용자 화면에 목록 창이 떠요. browser_select로 항목을 고르세요.`);
     }
+    if (info.dateType) {
+      throw new CdpmError(`클릭하지 않았어요: [${ref}]는 ${info.dateType} 입력칸이라 누르면 사용자 화면에 선택 창(달력·시계·색)이 떠요. browser_type으로 값을 넣으세요 (형식: ${DATE_FORMAT[info.dateType] ?? info.dateType}).`);
+    }
     const href = await callOn<string>(fs, obj, 'function () { const a = this.closest && this.closest("a[href]"); return a ? a.href : ""; }');
     const ext = href ? externalScheme(href) : undefined;
     if (ext) {
@@ -403,14 +455,14 @@ export async function click(s: PageSession, agent: string, ref: string, double =
     // 이 클릭이 파일 선택 창을 열면(파일 칸·"첨부" 버튼 등) OS 창을 띄우지 않고 가로챈다 (CDPM이 누르는 동안만. 사람이 누르면 평소대로 뜸)
     let chooser: { backendNodeId: number; mode: string } | undefined;
     const offChooser = fs.conn.on('Page.fileChooserOpened', (p) => { chooser = p; });
-    await fs.send('Page.setInterceptFileChooserDialog', { enabled: true }, 3000).catch(() => undefined);
+    if (fs !== s) await fs.send('Page.setInterceptFileChooserDialog', { enabled: true }, 3000).catch(() => undefined);
     let note: string;
     try {
       note = await settleAfter(s, () => mouseClick(s, x, y, double ? 2 : 1, visible));
       if (!chooser) await fs.evaluate('0', { timeoutMs: 3000 }).catch(() => undefined);
     } finally {
       offChooser();
-      await fs.send('Page.setInterceptFileChooserDialog', { enabled: false }, 3000).catch(() => undefined);
+      if (fs !== s) await fs.send('Page.setInterceptFileChooserDialog', { enabled: false }, 3000).catch(() => undefined);
     }
     if (chooser) {
       s.fileChooser = { fs, backendNodeId: chooser.backendNodeId, multiple: chooser.mode === 'selectMultiple', at: Date.now() };
@@ -477,13 +529,13 @@ export async function pressKey(s: PageSession, key: string): Promise<string> {
 /** 날짜·시간 입력칸: 칸별 키 입력은 로케일마다 달라 불안정하므로 값을 직접 넣고 input/change 이벤트를 낸다. */
 async function setDateLike(s: PageSession, obj: string, info: ElementInfo, text: string, ref: string): Promise<string> {
   const target = info.inDateHost ? await callOnObject(s, obj, 'function () { return this.getRootNode().host; }') : obj;
-  if (!target) throw new CdpmError(`[${ref}] 날짜·시간 입력칸을 찾지 못했어요.`);
+  if (!target) throw new CdpmError(`[${ref}] 날짜·시간·색 입력칸을 찾지 못했어요.`);
   // 형식이 틀리면 브라우저가 값을 비워 버리므로, 먼저 넣어 보고 틀리면 원래 값으로 되돌린다. 이벤트는 맞을 때만 낸다.
   const r = await callOn<{ ok: boolean; prev: string }>(s, target, `function (v) {
     const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     const prev = this.value;
     set.call(this, v);
-    if (this.value !== v) { set.call(this, prev); return { ok: false, prev }; }
+    if (this.value.toLowerCase() !== String(v).toLowerCase()) { set.call(this, prev); return { ok: false, prev }; }
     this.dispatchEvent(new Event('input', { bubbles: true }));
     this.dispatchEvent(new Event('change', { bubbles: true }));
     return { ok: true, prev };

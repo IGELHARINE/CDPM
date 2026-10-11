@@ -36,6 +36,27 @@ cdpm install
 
 `cdpm install` registers CDPM with Claude Code and sets up the status line, the parallel-work rule, the `cdpm-browser` subagent and the permission allow list in one go. Restart Claude Code afterwards.
 
+### Other MCP clients (Cursor, Claude Desktop, ...)
+
+`cdpm install` only registers with Claude Code. For other clients add it to their `mcpServers` config (paths from `npm root -g`):
+
+```json
+{
+  "mcpServers": {
+    "cdpm": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": ["C:\\Users\\<you>\\AppData\\Roaming\\npm\\node_modules\\cdpm-mcp\\dist\\cli.js"]
+    }
+  }
+}
+```
+
+On macOS: `"command": "/opt/homebrew/opt/node/bin/node"`, `"args": ["/opt/homebrew/lib/node_modules/cdpm-mcp/dist/cli.js"]`.
+
+- The tools are the same for every client.
+- CDPM picks its instructions from the connecting client's name: only `claude-code` gets the Claude Code specific guidance (spawning subagents with the Agent tool, `cdpm-browser`). Other clients get a generic rule: give each slot its own subagent if the client has them, otherwise use a different `agent` name per slot.
+- The automatic setup (status line, `CLAUDE.md` rule, `cdpm-browser`, permissions) changes `~/.claude`, so it only runs when Claude Code connects. Starting CDPM from another client never touches Claude Code's settings.
+
 ### From a clone (development)
 
 ```sh
@@ -152,7 +173,13 @@ Data lives in `%LOCALAPPDATA%\cdpm\` on Windows `~/Library/Application Support/c
 
 ## What CDPM does not do / refuses
 
-- No user-agent or fingerprint changes, device emulation, page script injection, or Chrome patching.
+- No user-agent or fingerprint changes, device emulation or Chrome patching, and no page script changes except the print guard below.
+- Things you click yourself open as usual. Only while an agent action runs, CDPM keeps OS windows from appearing:
+  - File pickers are intercepted however the action opens them (click, Enter on a file input, form submit), with a hint to use `browser_upload`.
+  - `window.print()` would open print preview and freeze the tab (it cannot be closed over CDP), so the page's `print` is disabled for the duration of the action only, reported, and restored right after. Use `browser_pdf` for a PDF.
+  - Date, time and color inputs are not clicked (they open a picker); `browser_type` sets their value (`#ff0000` for colors).
+  - Browser shortcuts such as `Ctrl+S`/`Ctrl+O`/`Ctrl+P` sent over CDP do not trigger Chrome's save/open/print windows.
+- Known limits: a button whose JavaScript navigates to an external-program scheme (`mailto:` etc.) is not caught in advance (links are); HTTP authentication prompts cannot be filled by an agent.
 - Launch flags are only `--remote-debugging-port`, `--user-data-dir`, `--no-first-run`, `--no-default-browser-check`, `--window-name` (plus `--headless` on request, and `--proxy-server` + `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` only when the user asks for a proxy; headless Chrome still reports `HeadlessChrome`).
 - Never changes window size/position/state, viewport, or zoom; if a click makes the page fullscreen, it is exited immediately.
 - No `Runtime.enable`; helper scripts run in an isolated world.
@@ -161,7 +188,7 @@ Data lives in `%LOCALAPPDATA%\cdpm\` on Windows `~/Library/Application Support/c
 
 ## Verification
 
-57 unit and 38 integration tests (`npm test`, `npm run test:integration`, real Chrome on test ports 29222+). Long-running checks (`npm run test:long`, ~20 min): 4,000 rounds on an SPA that replaces its DOM, with a new agent name every round, kept the CDPM server heap within a fixed band (26–39 MB, no upward trend) and the page at 1,421 DOM nodes / 0.8 MB JS heap; 3 sessions sharing one slot for 600 rounds each (1,800 tabs opened and closed, the slot restarted 3 times) stayed at ~20 MB heap per session with no lock files or tabs left behind. A 15-subagent, 30-slot concurrent run confirmed that all 30 windows' position/size/state and all 52 tabs' viewport (`innerWidth×innerHeight`) and zoom were unchanged.
+58 unit and 40 integration tests (`npm test`, `npm run test:integration`, real Chrome on test ports 29222+). Long-running checks (`npm run test:long`, ~20 min): 4,000 rounds on an SPA that replaces its DOM, with a new agent name every round, kept the CDPM server heap within a fixed band (26–39 MB, no upward trend) and the page at 1,421 DOM nodes / 0.8 MB JS heap; 3 sessions sharing one slot for 600 rounds each (1,800 tabs opened and closed, the slot restarted 3 times) stayed at ~20 MB heap per session with no lock files or tabs left behind. A 15-subagent, 30-slot concurrent run confirmed that all 30 windows' position/size/state and all 52 tabs' viewport (`innerWidth×innerHeight`) and zoom were unchanged.
 
 ## License
 

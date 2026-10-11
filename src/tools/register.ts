@@ -8,6 +8,7 @@ import { browserConnection, forgetSlotVisibility, knownDialog, onAgentForgotten,
 import { ensureDownloadTracking, waitDownload } from '../cdp/downloads.js';
 import { probe } from '../cdp/targets.js';
 import { describeProxy, parseProxy, type ProxySpec } from '../chrome/proxy.js';
+import { isClaudeCode } from '../client-info.js';
 import { CdpmError } from '../errors.js';
 import { withSlotLock } from '../registry/lock.js';
 import { pausedInfo, pausedRefusal, pauseSlots, resumeSlots } from '../pause.js';
@@ -42,9 +43,11 @@ function multiSlotRefusal(agent: string, slot: number, allowed: boolean | undefi
   for (const [k, at] of m) if (now - at > 60_000) m.delete(k);
   const others = [...m.keys()].filter((k) => k !== slot).sort((x, y) => x - y);
   if (others.length && !allowed) {
-    return `거절했어요: ${agent}은(는) 방금 ${others.join(', ')}번 슬롯을 쓰고 있어서 ${slot}번은 맡지 않아요. ` +
-      `슬롯마다 다른 일이면 한 메시지 안에서 Agent 도구를 슬롯 수만큼 함께 불러 서브에이전트(subagent_type "cdpm-browser")를 한꺼번에 띄우고, ` +
-      `각자 자기 slot과 agent 이름(예: "${slot}번담당")으로 일하게 하세요. 결과물(보고서·HTML 조각 등)도 각 서브에이전트가 자기 몫을 쓰고 메인은 합치기만 하세요. ` +
+    const how = isClaudeCode()
+      ? `슬롯마다 다른 일이면 한 메시지 안에서 Agent 도구를 슬롯 수만큼 함께 불러 서브에이전트(subagent_type "cdpm-browser")를 한꺼번에 띄우고, ` +
+        `각자 자기 slot과 agent 이름(예: "${slot}번담당")으로 일하게 하세요. 결과물(보고서·HTML 조각 등)도 각 서브에이전트가 자기 몫을 쓰고 메인은 합치기만 하세요. `
+      : `슬롯마다 다른 일이면 서브에이전트(하위 에이전트)를 쓸 수 있을 때 슬롯마다 하나씩 맡기고, 없으면 슬롯마다 다른 agent 이름(예: "${slot}번담당")을 넣어 부르세요. `;
+    return `거절했어요: ${agent}은(는) 방금 ${others.join(', ')}번 슬롯을 쓰고 있어서 ${slot}번은 맡지 않아요. ` + how +
       `한 에이전트가 여러 슬롯을 함께 봐야 하는 일(비교 등)이면 multiSlot: true를 넣어 다시 부르세요.`;
   }
   m.set(slot, now);
@@ -178,7 +181,12 @@ async function onTab(args: TabCall, kind: TabKind, action: string | null, fn: (s
     let out: Out;
     try {
       const exec = async () => {
-        const r = await fn(session, tab, agent);
+        let r: Out;
+        if (kind === 'action') {
+          const g = await act.guardAction(session, () => fn(session, tab, agent));
+          r = g.value;
+          r.text += g.note;
+        } else r = await fn(session, tab, agent);
         // read 옵션: 조작 결과에 바뀐 화면을 바로 붙인다 (같은 줄 세우기 안에서, 다른 조작이 끼어들기 전에)
         if (args.read && kind === 'action') r.text += await readAfter(session, agent, args.read);
         return r;
@@ -370,7 +378,11 @@ export function registerTools(server: McpServer) {
     if (anyLaunched && picked) {
       msg += targets.length === 1 ? '\n번호를 지정하지 않아서 비어 있는 가장 작은 슬롯을 골랐어요.' : '\n번호를 지정하지 않아서 비어 있는 슬롯을 작은 번호부터 골랐어요.';
     }
-    if (targets.length > 1) {
+    if (targets.length > 1 && !isClaudeCode()) {
+      msg += '\n[다음 할 일] 슬롯마다 다른 일을 맡겼다면, 서브에이전트(하위 에이전트)를 쓸 수 있으면 슬롯마다 하나씩 맡기고, 없으면 슬롯마다 다른 agent 이름(예: "1번담당")을 넣어 차례로 처리하세요. ' +
+        '사용자 로그인이 필요하면 "됐다고 알려 달라"고 하지 말고 browser_wait url/gone/text로 완료를 감지하세요.';
+    }
+    if (targets.length > 1 && isClaudeCode()) {
       msg += '\n[다음 할 일] 슬롯마다 다른 일을 맡겼다면, 지금 한 메시지 안에서 Agent 도구를 슬롯 수만큼 함께 불러(run_in_background: true) 서브에이전트(subagent_type "cdpm-browser")를 한꺼번에 띄우세요. 지시는 슬롯 번호·agent 이름·할 일만 1~3줄로 짧게 ' +
         '(각자 slot 번호와 자기 agent 이름을 쓰게). 주소 이동부터 서브에이전트가 하고, 메인은 슬롯마다 이동해 두거나 돌아가며 직접 처리하지 마세요. ' +
         '사용자 로그인이 필요하면 "됐다고 알려 달라"고 하지 말고, 서브에이전트가 browser_wait url/gone/text로 스스로 감지하게 하세요.';
@@ -888,7 +900,7 @@ export function registerTools(server: McpServer) {
   }));
 }
 
-export const SERVER_INSTRUCTIONS = `CDPM: Chrome 슬롯 1~30번을 CDP로 조종한다. 슬롯 N의 CDP 포트는 ${PORT_BASE}+N (1번=${PORT_BASE + 1}).
+const INSTRUCTIONS_CLAUDE_CODE = `CDPM: Chrome 슬롯 1~30번을 CDP로 조종한다. 슬롯 N의 CDP 포트는 ${PORT_BASE}+N (1번=${PORT_BASE + 1}).
 - 사용자가 "3번 봐줘"라고 하면 slot=3. 모든 도구에 slot을 넣는다.
 - Chrome은 사용자가 켜 달라고 말할 때만 browser_launch로 켠다. 꺼진 슬롯은 다른 도구가 켜지 않는다. 번호 없이 "켜줘"라고 하면 slot을 생략한다 (비어 있는 가장 작은 번호).
 - 켤 때 창 모드(보임)인지 헤드리스(안 보임)인지 사용자가 말하지 않았으면 먼저 물어본다. 여러 슬롯을 한꺼번에 켜면 한 번만 묻는다.
@@ -912,3 +924,24 @@ export const SERVER_INSTRUCTIONS = `CDPM: Chrome 슬롯 1~30번을 CDP로 조종
 - 창 크기·위치·뷰포트는 절대 바꾸지 않는다. 사용자가 보는 탭을 바꾸는 browser_tab_select는 사용자가 원할 때만 쓴다.
 - 사용자가 "N번 멈춰"라고 하면 slot_pause, "다시 해"라고 하면 slot_resume. 멈춘 슬롯은 조작이 거절된다: 맡은 에이전트는 조작하지 말고 slot_inbox(wait=600)로 기다리다가, 다시 시작 메시지를 받으면 browser_snapshot으로 화면을 다시 읽고 이어 간다 (스스로 다시 시작하지 않는다).
 - 알림창(alert/confirm/prompt/beforeunload)이 뜨면 웬만하면 내용을 보고 직접 판단해서 browser_dialog로 확인·취소한다. 사용자가 시키지 않은 되돌릴 수 없는 일(결제·삭제 등)을 확정하는 창일 때만 사용자에게 묻는다.`;
+
+/** Claude Code가 아닌 클라이언트(Cursor, Claude Desktop 등)용: Agent 도구·run_in_background·cdpm-browser처럼 Claude Code에만 있는 말을 뺀다. */
+const GENERIC_PARALLEL = '- 여러 슬롯에 각각 다른 일을 시키면: 서브에이전트(하위 에이전트)를 쓸 수 있는 클라이언트면 슬롯마다 하나씩 맡겨 병렬로 처리한다 (메인은 browser_launch 한 번으로 켜기까지만). ' +
+  '서브에이전트가 없으면 슬롯마다 다른 agent 이름(예: "1번담당", "2번담당")을 넣어 차례로 처리한다 (같은 agent 이름으로 60초 안에 다른 슬롯을 조작하면 거절된다).';
+
+function genericInstructions(): string {
+  return INSTRUCTIONS_CLAUDE_CODE
+    .split('\n')
+    // Claude Code 전용 병렬 처리 안내(Agent 도구·cdpm-browser) → 일반 안내로
+    .map((l) => (l.startsWith('- 여러 슬롯에 각각 다른 일을 시키면') ? GENERIC_PARALLEL : l))
+    .map((l) => l.replace('서브에이전트를 먼저 띄워 두고, 각자', '(서브에이전트를 쓰면 먼저 띄워 두고) 각자'))
+    .join('\n');
+}
+
+/** 클라이언트에 맞는 서버 안내 (initialize 때 정한다). */
+export function serverInstructions(claudeCode: boolean): string {
+  return claudeCode ? INSTRUCTIONS_CLAUDE_CODE : genericInstructions();
+}
+
+/** 예전 이름 (Claude Code용 안내) */
+export const SERVER_INSTRUCTIONS = INSTRUCTIONS_CLAUDE_CODE;

@@ -275,7 +275,9 @@ export class PageSession {
    * 내 호출이 그 탭 때문에 늦어지지 않게 한다. 제때 답이 없으면 마지막으로 잰 값을 쓴다.
    */
   async visibilityForList(): Promise<Visibility> {
-    const v = await this.visibility(300);
+    let v = await this.visibility(300);
+    // 처음 보는 탭(연결·실행 공간을 막 만든 경우)은 0.3초를 넘기기 쉽다. 예전에 잰 값도 없으면 한 번 더 넉넉히 기다린다
+    if (v === 'unknown' && !this.lastVisibility && !this.dialog) v = await this.visibility(1000);
     if (v !== 'unknown') {
       this.lastVisibility = { value: v, at: Date.now() };
       return v;

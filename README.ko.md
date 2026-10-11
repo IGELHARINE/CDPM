@@ -36,6 +36,27 @@ cdpm install
 
 `cdpm install`이 Claude Code에 CDPM을 등록하고, 상태줄·병렬 처리 규칙·전용 서브에이전트·권한 허용 목록까지 한 번에 설정해요. 끝나면 Claude Code를 다시 시작하세요.
 
+### 다른 MCP 클라이언트 (Cursor, Claude Desktop 등)
+
+`cdpm install`은 Claude Code에만 등록해요. 다른 클라이언트는 설정 파일의 `mcpServers`에 직접 넣어요 (`npm root -g`로 나온 폴더 기준).
+
+```json
+{
+  "mcpServers": {
+    "cdpm": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": ["C:\\Users\\<사용자>\\AppData\\Roaming\\npm\\node_modules\\cdpm-mcp\\dist\\cli.js"]
+    }
+  }
+}
+```
+
+맥은 `"command": "/opt/homebrew/opt/node/bin/node"`, `"args": ["/opt/homebrew/lib/node_modules/cdpm-mcp/dist/cli.js"]`처럼요.
+
+- 도구는 클라이언트와 상관없이 모두 같아요.
+- CDPM은 연결한 클라이언트 이름을 보고 안내를 고르고, 이름이 `claude-code`일 때만 Claude Code 전용 안내(Agent 도구로 서브에이전트 띄우기, `cdpm-browser`)를 줘요. 다른 클라이언트에는 "서브에이전트가 있으면 슬롯마다 맡기고, 없으면 슬롯마다 다른 `agent` 이름으로"라는 공통 안내만 줘요.
+- 자동 설정(상태줄, `CLAUDE.md` 규칙, `cdpm-browser`, 권한)도 `~/.claude`를 바꾸는 일이라 Claude Code가 연결했을 때만 해요. 다른 클라이언트에서 CDPM을 켜도 Claude Code 설정은 건드리지 않아요.
+
 ### 직접 받아서 (개발용)
 
 ```sh
@@ -226,17 +247,23 @@ Windows `%LOCALAPPDATA%\cdpm\`, macOS `~/Library/Application Support/cdpm/`, Lin
 
 ## CDPM이 하지 않는 것 / 막는 것
 
-- User-Agent·지문 변경, 기기 에뮬레이션, 페이지 스크립트 주입, Chrome 패치를 하지 않아요.
+- User-Agent·지문 변경, 기기 에뮬레이션, Chrome 패치를 하지 않아요. 페이지 스크립트도 바꾸지 않아요. 예외는 아래 인쇄 하나뿐이에요.
 - 실행 인자는 `--remote-debugging-port`, `--user-data-dir`, `--no-first-run`, `--no-default-browser-check`, `--window-name=N번`뿐이에요 (헤드리스 요청 시 `--headless`, 사용자가 프록시를 부탁했을 때만 `--proxy-server`와 `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` 추가). 헤드리스 Chrome은 User-Agent에 `HeadlessChrome`이 그대로 찍혀요.
 - 창 크기·위치·상태, 뷰포트, 확대 비율을 바꾸지 않아요. 페이지가 클릭 때문에 전체 화면이 되면 바로 해제해요.
 - `Runtime.enable`을 쓰지 않고, 판단용 스크립트는 전부 isolated world에서 실행해요.
 - 알림창(alert/confirm/prompt/beforeunload)을 정해진 규칙으로 자동 처리하지 않아요. 떠 있으면 알리고, Claude가 내용을 보고 `browser_dialog`로 직접 확인·취소해요. 사용자가 시키지 않은 되돌릴 수 없는 일(결제·삭제 등)을 확정하는 창일 때만 먼저 물어봐요.
 - 거부하는 동작: `mailto:`·`tel:`·앱 전용 주소로 클릭·이동·켜면서 열기·새 탭 열기(다른 프로그램 실행), `<select>` 클릭(목록 창), `Ctrl+C/X/V`·`Shift+Insert`(사용자 클립보드)
+- 사람이 직접 누른 건 평소처럼 떠요. **에이전트가 조작하는 그 순간에만** OS 창이 뜨지 않게 해요:
+  - 파일 선택 창: 클릭뿐 아니라 키(파일 칸에서 Enter 등)나 폼 제출 등 어떤 조작으로 열려도 가로채고, `browser_upload`로 넣으라고 알려요.
+  - 인쇄: 페이지가 `window.print()`를 부르면 인쇄 미리보기가 떠서 탭이 멈춰요 (CDP로 닫을 수 없음). 그래서 에이전트 조작 동안에만 페이지의 `print`를 잠깐 막고 "막았다"고 알려요. 조작이 끝나면 바로 원래대로 돌려놔요. PDF가 필요하면 `browser_pdf`.
+  - 날짜·시간·색 칸은 누르면 선택 창이 떠서 클릭하지 않고, `browser_type`으로 값을 넣어요 (색은 `#ff0000` 형식).
+  - `Ctrl+S`·`Ctrl+O`·`Ctrl+P` 같은 Chrome 단축키는 CDP로 보낸 키로는 동작하지 않아서 저장·열기·인쇄 창이 뜨지 않아요.
+- 알려진 한계: 버튼 안의 JS가 `mailto:` 같은 외부 프로그램 주소로 이동하는 건 미리 막지 못해요 (링크 주소는 막음). 아이디·비밀번호를 묻는 HTTP 인증 창은 에이전트가 채울 수 없어요.
 - 파일 응답으로 이동해서 다운로드가 시작되면 파일 이름과 함께 알려줘요 (Chrome 기본 다운로드 폴더에 저장돼요).
 
 ## 검증
 
-- 단위 테스트 57개, 통합 테스트 38개 (`npm test`, `npm run test:integration` — 테스트 포트 29222~로 진짜 Chrome 사용)
+- 단위 테스트 58개, 통합 테스트 40개 (`npm test`, `npm run test:integration` — 테스트 포트 29222~로 진짜 Chrome 사용)
 - 오래 켜 두기 시험 (`npm run test:long`, 약 20분): 화면을 계속 새로 그리는 SPA에서 반복마다 새 에이전트 이름으로 4,000회 → CDPM 서버 힙은 일정한 범위(26~39MB) 안에서만 오르내리고 계속 늘지 않음, 페이지는 요소 1,421개·JS 힙 0.8MB 그대로. 세션 3개가 한 슬롯을 600회씩 동시에 사용(탭 1,800개 열고 닫기, 중간에 슬롯 3번 재시작) → 세션마다 힙 약 20MB 그대로, 남은 잠금 파일·탭 없음.
 - 서브에이전트 15명이 슬롯 30개를 동시에 쓰는 실사용 테스트: 테스트 전후로 창 30개 위치·크기·상태, 탭 52개 뷰포트(`innerWidth×innerHeight`), 확대 비율이 모두 그대로임을 확인
 

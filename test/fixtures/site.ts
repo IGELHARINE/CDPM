@@ -52,6 +52,11 @@ const PAGES: Record<string, string> = {
 <label>이름 <input id="nm"></label>
 <button>보내기</button></form><p id="r">미제출</p>
 </body></html>`,
+  '/printpage': `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>인쇄</title></head><body>
+<button onclick="window.print(); document.getElementById('o').textContent = '인쇄 뒤 이어짐'">인쇄하기</button>
+<label>색 <input type="color" id="col" value="#000000"></label>
+<p id="o">처음</p>
+</body></html>`,
   '/twice': `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>두 번 요청</title></head><body>
 <button onclick="fetch('/api/hang?slow=1'); setTimeout(() => fetch('/api/hang?n=2').then(r => r.json()).then(d => (document.getElementById('o').textContent = d.n)), 200)">두 번 요청</button><p id="o"></p>
 </body></html>`,

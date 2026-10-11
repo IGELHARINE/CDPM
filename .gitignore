@@ -4,3 +4,4 @@ dist-test/
 *.log
 .DS_Store
 .playwright-mcp/
+.tmp-probe/

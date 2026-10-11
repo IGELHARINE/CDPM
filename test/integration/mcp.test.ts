@@ -17,8 +17,8 @@ const ENV = { ...process.env, CDPM_HOME: HOME, CDPM_TEST_PORT_BASE: '29221' } as
 const SLOT = 1;
 const PORT = 29222;
 
-async function connect(): Promise<Client> {
-  const client = new Client({ name: 'cdpm-test', version: '0' });
+async function connect(name = 'cdpm-test'): Promise<Client> {
+  const client = new Client({ name, version: '0' });
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [CLI], env: ENV }));
   return client;
 }
@@ -377,7 +377,50 @@ describe('CDPM MCP 통합', { timeout: 180_000 }, () => {
     // ref로 바로 넣기
     const up2 = await call(a, 'browser_upload', { slot: SLOT, agent: 'A', tab: 't1', ref: file, files: [tmp] });
     assert.match(up2.text, /파일을 넣었어요: \[e\d+\] 1개/);
+    // 클릭이 아니라 키(파일 칸에서 Enter)로 열려도 OS 창 대신 가로챔
+    await call(a, 'browser_eval', { slot: SLOT, agent: 'A', tab: 't1', expression: "document.getElementById('file').focus()" });
+    const k = await call(a, 'browser_press_key', { slot: SLOT, agent: 'A', tab: 't1', key: 'Enter' });
+    assert.match(k.text, /파일 선택 창이 열리려 해서 사용자 화면에 띄우지 않았어요/, k.text);
+    const up3 = await call(a, 'browser_upload', { slot: SLOT, agent: 'A', tab: 't1', files: [tmp] });
+    assert.match(up3.text, /파일을 넣었어요 \(1개\)/, up3.text);
     fs.rmSync(tmp, { force: true });
+  });
+
+  it('에이전트 조작 중 인쇄 창은 막고 바로 이어감, 조작이 끝나면 원래대로 / 날짜·색 칸은 클릭 대신 값으로', async () => {
+    const A = { slot: SLOT, agent: 'A', tab: 't1' };
+    await call(a, 'browser_navigate', { ...A, url: `${site.url}/printpage` });
+    const snap = (await call(a, 'browser_snapshot', A)).text;
+    const t0 = Date.now();
+    const p = await call(a, 'browser_click', { ...A, ref: ref(snap, /button "인쇄하기" \[(e\d+)\]/), read: 'text' });
+    assert.ok(Date.now() - t0 < 5000, `인쇄 버튼 클릭이 ${Date.now() - t0}ms 걸림 (탭이 멈춤)`);
+    assert.match(p.text, /인쇄 창을 열려고 해서 막았어요/, p.text);
+    assert.match(p.text, /인쇄 뒤 이어짐/, '페이지가 멈추지 않고 이어서 실행됨');
+    // 조작이 끝나면 페이지의 print는 원래대로 (사람이 누르는 인쇄는 평소처럼)
+    const restored = await call(a, 'browser_eval', { ...A, expression: "'__cdpmPrintGuard' in window" });
+    assert.match(restored.text, /false/);
+    // 색 칸: 클릭은 거절, 값으로는 들어감 (대소문자 상관없이)
+    const col = ref(snap, /"색"[^\n]*\[(e\d+)\]/);
+    const c = await call(a, 'browser_click', { ...A, ref: col });
+    assert.equal(c.isError, true);
+    assert.match(c.text, /color 입력칸이라 누르면 사용자 화면에 선택 창/);
+    const ct = await call(a, 'browser_type', { ...A, ref: col, text: '#FF0000' });
+    assert.equal(ct.isError, false, ct.text);
+    const cv = await call(a, 'browser_eval', { ...A, expression: "document.getElementById('col').value" });
+    assert.match(cv.text, /#ff0000/);
+    await call(a, 'browser_navigate', { ...A, url: site.url }); // 뒤 시험들이 쓰는 원래 페이지로
+  });
+
+  it('클라이언트에 맞는 안내: Claude Code만 서브에이전트 안내, 다른 클라이언트에는 Claude Code 전용 말이 없음', async () => {
+    const generic = a.getInstructions() ?? '';
+    assert.ok(generic.includes('browser_launch'), '공통 안내는 있음');
+    for (const w of ['Agent 도구', 'cdpm-browser', 'run_in_background', 'subagent_type']) assert.ok(!generic.includes(w), `다른 클라이언트 안내에 "${w}"가 있음`);
+    const cc = await connect('claude-code');
+    try {
+      const inst = cc.getInstructions() ?? '';
+      assert.ok(inst.includes('cdpm-browser') && inst.includes('run_in_background'), 'Claude Code에는 서브에이전트 안내가 있음');
+    } finally {
+      await cc.close();
+    }
   });
 
   it('isolated world: 페이지 전역 변수는 browser_eval에서 보이지 않음', async () => {

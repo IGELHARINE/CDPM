@@ -5,6 +5,7 @@ import { chromeCandidates, findChromeWith } from '../../src/chrome/finder.js';
 import { macCommands, parseCombo } from '../../src/page/keys.js';
 import { pickTab, ownershipWarnings, type TabView } from '../../src/service.js';
 import { describeProxy, parseProxy } from '../../src/chrome/proxy.js';
+import { isClaudeCode } from '../../src/client-info.js';
 import { stableNodePath } from '../../src/paths.js';
 import { colorOf, hexToRgb, isValidSlot, portBaseFrom, portOf, SLOT_COLORS } from '../../src/slots.js';
 import { formatStatusline, isBlankPage } from '../../src/statusline.js';
@@ -248,6 +249,13 @@ describe('macOS 편집 명령', () => {
     assert.deepEqual(macCommands(parseCombo('Shift+Meta+ArrowLeft')!), ['moveToBeginningOfLineAndModifySelection']);
     assert.deepEqual(macCommands(parseCombo('Enter')!), []);
     assert.deepEqual(macCommands(parseCombo('Control+A')!), []);
+  });
+});
+
+describe('클라이언트 구분', () => {
+  it('Claude Code는 claude-code라는 이름으로 접속', () => {
+    assert.equal(isClaudeCode('claude-code'), true);
+    for (const n of ['cursor-vscode', 'claude-ai', 'codex', '', 'cdpm-test']) assert.equal(isClaudeCode(n), false, n);
   });
 });
 
