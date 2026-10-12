@@ -13,6 +13,7 @@ An MCP server that runs **Chrome slots 1–30** over the Chrome DevTools Protoco
 - **Pure CDP.** No Playwright, no Puppeteer, no stealth patches. A normal Chrome with a debugging port, driven with real input events.
 - **Numbered slots.** Slot *N* uses CDP port `14049 + N` (slot 1 = 14050 … slot 30 = 14079) and its own profile folder. The range avoids the common default 9222; set `CDPM_PORT_BASE` to move it if something else uses those ports. Ports outside that range are not managed.
 - **Starts only when asked.** No tool ever starts a closed slot except `browser_launch`. Without a number, the lowest free slot is used.
+- **Slots outlive their caller.** Closing CDPM, Claude Code or VS Code (even when it kills its whole process tree) does not close slot Chrome. Slots end only with `browser_close` / `cdpm close` or when you close that Chrome yourself.
 - **One taskbar button per slot**, with a browser-window icon in the slot color and the slot number, pre-corrected so the taskbar shows it pixel-sharp (drawn with the system font via GDI+, so no font files ship in the repo). The window title shows "3번" via Chrome's own window-name feature (pages can't see it).
 - **Built for many agents.** Every tool takes `slot` explicitly, records who opened each tab and who touched it last, warns (without blocking) when you act on a tab someone else just used, and serializes concurrent commands on the same tab.
 - **Agents can talk** with `slot_send` / `slot_inbox`; unread messages are also delivered at the top of every result.

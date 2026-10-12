@@ -1,9 +1,9 @@
 // 사용자가 프록시를 써 달라고 할 때만 슬롯 Chrome에 프록시를 붙인다.
 // 아이디·비밀번호가 없으면 --proxy-server로 바로 넘기고, 있으면(Chrome은 플래그로 인증을 받지 못함)
 // 인증을 대신 붙여 주는 중계 프로그램(proxy-forwarder.js)을 이 슬롯 전용으로 띄워 Chrome이 그쪽을 보게 한다.
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { CdpmError } from '../errors.js';
+import { spawnOrphan } from '../orphan.js';
 import { portOf } from '../slots.js';
 
 export interface ProxySpec {
@@ -83,26 +83,16 @@ export async function proxyArgs(slot: number, p: ProxySpec): Promise<string[]> {
 
 async function startForwarder(slot: number, p: ProxySpec): Promise<number> {
   const script = fileURLToPath(new URL('../proxy-forwarder.js', import.meta.url));
-  // 비밀번호가 프로세스 목록(명령줄)에 보이지 않도록 환경변수로 넘긴다
-  const child = spawn(process.execPath, [script], {
-    detached: true,
-    stdio: ['ignore', 'pipe', 'ignore'],
-    windowsHide: true,
-    env: { ...process.env, CDPM_PROXY_UPSTREAM: JSON.stringify(p), CDPM_PROXY_CDP_PORT: String(portOf(slot)) },
-  });
-  const port = await new Promise<number>((resolve, reject) => {
-    let buf = '';
-    const timer = setTimeout(() => reject(new CdpmError('프록시 중계 프로그램이 5초 안에 시작하지 않았어요.')), 5000);
-    child.stdout!.on('data', (d) => {
-      buf += String(d);
-      const m = /LISTEN (\d+)/.exec(buf);
-      if (m) { clearTimeout(timer); resolve(Number(m[1])); }
+  // 비밀번호가 프로세스 목록(명령줄)에 보이지 않도록 환경변수로 넘긴다.
+  // Chrome처럼 부모 없는 프로세스로 띄워서 VS Code 등이 닫히며 줄기째 종료해도 살아 있게 한다 (그 Chrome이 꺼지면 스스로 끝남).
+  try {
+    const { line } = await spawnOrphan(process.execPath, [script], {
+      hide: true,
+      waitLine: 'LISTEN [0-9]+',
+      env: { ...process.env, CDPM_PROXY_UPSTREAM: JSON.stringify(p), CDPM_PROXY_CDP_PORT: String(portOf(slot)) },
     });
-    child.on('error', (e) => { clearTimeout(timer); reject(new CdpmError(`프록시 중계 프로그램을 띄우지 못했어요: ${e.message}`)); });
-    child.on('exit', (code) => { clearTimeout(timer); reject(new CdpmError(`프록시 중계 프로그램이 바로 끝났어요 (종료 코드 ${code}).`)); });
-  });
-  child.stdout!.destroy();
-  child.removeAllListeners();
-  child.unref();
-  return port;
+    return Number(/LISTEN (\d+)/.exec(line ?? '')?.[1]);
+  } catch (e) {
+    throw new CdpmError(`프록시 중계 프로그램을 띄우지 못했어요: ${(e as Error).message}`);
+  }
 }

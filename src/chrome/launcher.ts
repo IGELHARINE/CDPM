@@ -1,10 +1,10 @@
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { probe, type VersionInfo } from '../cdp/targets.js';
 import { CdpmError } from '../errors.js';
+import { spawnOrphan } from '../orphan.js';
 import { paths, readConfig } from '../paths.js';
 import { portOf } from '../slots.js';
-import { sleep } from '../util.js';
+import { pidAlive, sleep } from '../util.js';
 import { findChrome } from './finder.js';
 import { proxyArgs, type ProxySpec } from './proxy.js';
 
@@ -36,30 +36,28 @@ export interface Launched {
   version: VersionInfo;
 }
 
-/** 슬롯 Chrome을 띄우고 CDP가 응답할 때까지 기다린다. MCP가 끝나도 Chrome은 살아 있도록 분리 실행. */
+/**
+ * 슬롯 Chrome을 띄우고 CDP가 응답할 때까지 기다린다. CDPM·Claude Code·VS Code가 끝나도(줄기째 강제 종료돼도)
+ * Chrome은 살아 있도록 부모 없는 프로세스로 띄운다 (orphan.ts).
+ */
 export async function launchChrome(slot: number, opts: LaunchOptions = {}): Promise<Launched> {
   const chrome = findChrome();
   fs.mkdirSync(paths.profile(slot), { recursive: true });
   const extra = opts.proxy ? await proxyArgs(slot, opts.proxy) : [];
-  const child = spawn(chrome, [...chromeArgs(slot, opts), ...extra, opts.url || 'about:blank'], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: false,
-  });
-  let spawnError: Error | undefined;
-  let exitedCode: number | null | undefined;
-  child.on('error', (e) => (spawnError = e));
-  child.on('exit', (code) => (exitedCode = code));
-  child.unref();
+  let pid: number;
+  try {
+    ({ pid } = await spawnOrphan(chrome, [...chromeArgs(slot, opts), ...extra, opts.url || 'about:blank'], { hide: false }));
+  } catch (e) {
+    throw new CdpmError(`Chrome 실행 실패: ${(e as Error).message}`);
+  }
 
   const deadline = Date.now() + READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (spawnError) throw new CdpmError(`Chrome 실행 실패: ${spawnError.message}`);
     const p = await probe(slot, 2000);
-    if (p.state === 'chrome') return { pid: child.pid, version: p.version };
-    if (exitedCode !== undefined) {
+    if (p.state === 'chrome') return { pid, version: p.version };
+    if (!pidAlive(pid)) {
       throw new CdpmError(
-        `${slot}번 Chrome이 켜지자마자 종료됐어요 (종료 코드 ${exitedCode}). ` +
+        `${slot}번 Chrome이 켜지자마자 종료됐어요. ` +
         `같은 프로필(${paths.profile(slot)})을 쓰는 Chrome이 디버깅 포트 없이 이미 떠 있으면, 새 Chrome은 그쪽에 창만 넘기고 끝나요. 그 창을 닫고 다시 켜 주세요.`,
       );
     }
