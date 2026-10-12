@@ -38,7 +38,7 @@ export async function probe(slot: number, timeoutMs = 1500): Promise<ProbeResult
     if (body && typeof body.Browser === 'string' && body.webSocketDebuggerUrl) return { state: 'chrome', version: body };
     return { state: 'other', detail: `HTTP ${res.status}` };
   } catch {
-    return { state: 'other', detail: `HTTP ${res.status} (JSON 아님)` };
+    return { state: 'other', detail: `HTTP ${res.status} (not JSON)` };
   }
 }
 

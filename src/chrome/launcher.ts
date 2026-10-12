@@ -48,7 +48,7 @@ export async function launchChrome(slot: number, opts: LaunchOptions = {}): Prom
   try {
     ({ pid } = await spawnOrphan(chrome, [...chromeArgs(slot, opts), ...extra, opts.url || 'about:blank'], { hide: false }));
   } catch (e) {
-    throw new CdpmError(`Chrome 실행 실패: ${(e as Error).message}`);
+    throw new CdpmError(`Failed to launch Chrome: ${(e as Error).message}`);
   }
 
   const deadline = Date.now() + READY_TIMEOUT_MS;
@@ -57,14 +57,14 @@ export async function launchChrome(slot: number, opts: LaunchOptions = {}): Prom
     if (p.state === 'chrome') return { pid, version: p.version };
     if (!pidAlive(pid)) {
       throw new CdpmError(
-        `${slot}번 Chrome이 켜지자마자 종료됐어요. ` +
-        `같은 프로필(${paths.profile(slot)})을 쓰는 Chrome이 디버깅 포트 없이 이미 떠 있으면, 새 Chrome은 그쪽에 창만 넘기고 끝나요. 그 창을 닫고 다시 켜 주세요.`,
+        `Slot ${slot} Chrome exited right after launch. ` +
+        `If a Chrome using the same profile (${paths.profile(slot)}) is already running without a debugging port, the new one hands its window over and exits. Close that window and launch again.`,
       );
     }
     await sleep(100);
   }
   throw new CdpmError(
-    `${slot}번 Chrome을 실행했지만 ${READY_TIMEOUT_MS / 1000}초 안에 CDP 포트(${portOf(slot)})가 열리지 않았습니다. ` +
-    `같은 프로필(${paths.profile(slot)})을 쓰는 Chrome이 디버깅 포트 없이 이미 떠 있을 수 있어요. 그 창을 닫고 다시 시도해 주세요.`,
+    `Slot ${slot} Chrome started, but CDP port ${portOf(slot)} did not open within ${READY_TIMEOUT_MS / 1000}s. ` +
+    `A Chrome using the same profile (${paths.profile(slot)}) may already be running without a debugging port. Close it and try again.`,
   );
 }

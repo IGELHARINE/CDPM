@@ -13,7 +13,7 @@ import { cdpmHome } from './paths.js';
 import { isStatuslineConfigured, setupStatusline } from './statusline-setup.js';
 
 /** 자동 설정 내용이 바뀌면 올린다 (그때 한 번 더 적용). */
-export const AUTO_SETUP_VERSION = 13; // 2: cdpm-browser 서브에이전트, 3: 권한 허용 목록, 4: 실시간 협업 규칙, 5: 메인은 켜기만·로그인 자동 감지, 6: 역할 구분, 7: 백그라운드로 한꺼번에·짧은 지시, 8: 켜면서 시작 주소 열기, 9: 서브에이전트 도구 추가(업로드·마우스 올리기 등), 10: 알림창 처리(browser_dialog), 11: 알림창은 웬만하면 직접 처리, 12: browser_wait enabled·response, 13: 멈춤·다시 시작
+export const AUTO_SETUP_VERSION = 14; // 2: cdpm-browser 서브에이전트, 3: 권한 허용 목록, 4: 실시간 협업 규칙, 5: 메인은 켜기만·로그인 자동 감지, 6: 역할 구분, 7: 백그라운드로 한꺼번에·짧은 지시, 8: 켜면서 시작 주소 열기, 9: 서브에이전트 도구 추가(업로드·마우스 올리기 등), 10: 알림창 처리(browser_dialog), 11: 알림창은 웬만하면 직접 처리, 12: browser_wait enabled·response, 13: 멈춤·다시 시작, 14: 헤드리스는 말했을 때만·긴 기다림은 백그라운드·슬롯별 다른 일 예시·한 슬롯 안 탭마다 다른 일도 서브에이전트
 
 export interface SetupItem {
   name: string;

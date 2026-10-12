@@ -29,7 +29,7 @@ export function isValidSlot(slot: unknown): slot is number {
 
 export function assertSlot(slot: unknown): asserts slot is number {
   if (!isValidSlot(slot)) {
-    throw new CdpmError(`슬롯은 ${MIN_SLOT}~${MAX_SLOT}번입니다. (받은 값: ${String(slot)})`);
+    throw new CdpmError(`Slot must be ${MIN_SLOT}-${MAX_SLOT} (got: ${String(slot)})`);
   }
 }
 

@@ -9,9 +9,9 @@ import { newSlotRecord, readRegistry, updateRegistry, type SlotRecord, type TabR
 import { MAX_SLOT, portOf } from './slots.js';
 import { applyDock, DOCK_SUPPORTED } from './taskbar/dock.js';
 import { applyTaskbar } from './taskbar/watcher.js';
-import { ago, josa, nowIso, pidAlive, secondsSince, sleep } from './util.js';
+import { ago, nowIso, pidAlive, secondsSince, sleep } from './util.js';
 
-export const EXTERNAL = '(외부)';
+export const EXTERNAL = '(external)';
 
 /** 이 프로세스가 직접 만든 탭 → 만든 에이전트. 기록부에 처음 올릴 때 openedBy로 쓴다. */
 const createdBy = new Map<string, string>();
@@ -32,8 +32,8 @@ export interface EnsureResult {
 }
 
 export const notRunningMessage = (slot: number) =>
-  `${slot}번 Chrome은 꺼져 있어요. CDPM은 사용자가 켜 달라고 할 때만 Chrome을 켭니다. ` +
-  `사용자에게 켤지 물어보고, 켜라고 하면 browser_launch를 쓰세요.`;
+  `Chrome on slot ${slot} is off. CDPM starts Chrome only when the user asks. ` +
+  `Ask the user whether to start it; if yes, use browser_launch.`;
 
 /** 떠 있는 슬롯에 붙는다 (기록·작업표시줄 맞춤). 꺼져 있으면 켜지 않고 오류. */
 /** 포트 확인. 늦게 답하면(바쁜 Chrome) 길게 한 번 더 묻는다. */
@@ -41,7 +41,7 @@ async function probeSure(slot: number) {
   let p = await probe(slot);
   if (p.state === 'slow') p = await probe(slot, 8000);
   if (p.state === 'slow') {
-    throw new CdpmError(`${slot}번 포트(${portOf(slot)})가 8초 넘게 응답하지 않아요. Chrome이 매우 바쁘거나 멈췄을 수 있어요. 잠시 뒤 다시 시도하세요.`);
+    throw new CdpmError(`Slot ${slot} port (${portOf(slot)}) has not responded for over 8s. Chrome may be very busy or hung. Retry shortly.`);
   }
   return p;
 }
@@ -64,7 +64,7 @@ export async function attachSlot(slot: number): Promise<void> {
     pid = await browserPid(slot);
     if (!pid || !pidAlive(pid)) {
       await forgetSlot(slot);
-      throw new CdpmError(`${slot}번 포트(${portOf(slot)})에 이 PC가 아닌 Chrome이 연결돼 있어요 (SSH 터널 등). 그 연결을 닫거나 다른 슬롯을 쓰세요.`);
+      throw new CdpmError(`Slot ${slot} port (${portOf(slot)}) is connected to a Chrome on another machine (SSH tunnel, etc.). Close that connection or use another slot.`);
     }
     await updateRegistry((r) => {
       const s = (r.slots[String(slot)] ??= newSlotRecord(EXTERNAL, nowIso()));
@@ -76,7 +76,7 @@ export async function attachSlot(slot: number): Promise<void> {
 }
 
 function portBusy(slot: number, detail: string) {
-  return new CdpmError(`${slot}번 슬롯의 포트 ${portOf(slot)}를 Chrome이 아닌 프로그램이 사용 중입니다 (${detail}). 그 프로그램을 종료하거나 다른 슬롯을 쓰세요.`);
+  return new CdpmError(`Slot ${slot} port ${portOf(slot)} is used by a non-Chrome program (${detail}). Close it or use another slot.`);
 }
 
 /** 사용자가 켜라고 했을 때만 부른다. 이미 떠 있으면 붙기만 한다. */
@@ -183,7 +183,7 @@ export async function syncTabs(slot: number): Promise<TabView[]> {
         const opener = openers.get(p.id);
         if (!openedBy && opener) {
           const by = s.tabs[opener]?.last?.agent;
-          openedBy = by ? `${by} (페이지가 염)` : `${s.tabs[opener]?.id ?? '다른 탭'}에서 페이지가 염`;
+          openedBy = by ? `${by} (via page)` : `page in ${s.tabs[opener]?.id ?? 'another tab'}`;
         }
         const seq = s.nextTabSeq++;
         s.tabs[p.id] = { id: `t${seq}`, seq, seenAt: nowIso(), openedBy: openedBy ?? EXTERNAL };
@@ -218,17 +218,17 @@ export function pickTab(tabs: TabView[], tabArg: string | number | undefined, ki
     const byNo = /^\d+$/.test(s) ? tabs.find((t) => t.no === Number(s)) : undefined;
     const found = byId ?? byNo;
     if (found) return { tab: found };
-    const list = tabs.map((t) => `${t.no}번 [${t.id}]`).join(', ');
-    return { error: `없는 탭이에요: "${s}". 지금 있는 탭: ${list || '없음'}` };
+    const list = tabs.map((t) => `${t.no} [${t.id}]`).join(', ');
+    return { error: `No such tab: "${s}". Open tabs: ${list || 'none'}` };
   }
   if (tabs.length === 1) return { tab: tabs[0] };
-  if (tabs.length === 0) return { error: '열린 탭이 없어요.' };
+  if (tabs.length === 0) return { error: 'No open tabs.' };
   // 이 에이전트가 마지막으로 쓴(또는 새로 연) 탭이 있으면 보기·조작 모두 그 탭
   const mine = tabs.find((t) => t.targetId === preferred);
   if (mine) return { tab: mine };
   // 보기 도구: 앞에 보이는 탭 → 첫 탭. 조작 도구: 쓴 적 있는 탭이 없으면 지정을 요구한다.
   if (kind === 'view') return { tab: tabs.find((t) => t.active) ?? tabs[0] };
-  return { error: `탭이 ${tabs.length}개 있고 이 에이전트가 아직 쓴 탭이 없어요. 어느 탭에서 실행할지 tab에 번호나 ID(예: "${tabs[0].id}")를 지정하세요.` };
+  return { error: `There are ${tabs.length} tabs and this agent has not used any yet. Set tab to a number or ID (e.g. "${tabs[0].id}").` };
 }
 
 /** 다른 에이전트가 최근(2분 안)에 조작한 탭을 조작할 때 붙일 경고 (막지는 않음). */
@@ -236,7 +236,7 @@ export function ownershipWarnings(tab: TabView, agent: string): string[] {
   const last = tab.rec.last;
   if (!last || last.agent === agent || secondsSince(last.at) > 120) return [];
   const when = ago(last.at);
-  return [`이 탭 [${tab.id}]은 ${josa(last.agent, '이', '가')} ${when === '방금' ? when : `${when}에`} ${last.action}했어요. 같이 쓰는 중이면 slot_send로 알려 주세요.`];
+  return [`Tab [${tab.id}] was used by ${last.agent} ${when} (${last.action}). If sharing it, tell them via slot_send.`];
 }
 
 /** 행동 기록. 기록부 잠금에 실패해도 도구 동작은 성공으로 두고 false를 돌려준다. */

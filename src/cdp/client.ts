@@ -35,7 +35,7 @@ export class CdpConnection {
       const ws = new WebSocket(url);
       const timer = setTimeout(() => {
         ws.close();
-        reject(new CdpmError(`CDP 연결 시간 초과: ${url}`));
+        reject(new CdpmError(`CDP connect timed out: ${url}`));
       }, timeoutMs);
       ws.addEventListener('open', () => {
         clearTimeout(timer);
@@ -43,20 +43,20 @@ export class CdpConnection {
       }, { once: true });
       ws.addEventListener('error', () => {
         clearTimeout(timer);
-        reject(new CdpmError(`CDP 연결 실패: ${url}`));
+        reject(new CdpmError(`CDP connect failed: ${url}`));
       }, { once: true });
     });
   }
 
   send<T = any>(method: string, params: Record<string, unknown> = {}, timeoutMs = 30_000, sessionId?: string): Promise<T> {
-    if (this.closed) return Promise.reject(new CdpmError(`CDP 연결이 끊어졌습니다 (${method}).`));
+    if (this.closed) return Promise.reject(new CdpmError(`CDP connection closed (${method}).`));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new CdpTimeoutError(
-          `Chrome이 ${Math.round(timeoutMs / 1000)}초 동안 응답하지 않았어요 (${method}). ` +
-          '페이지가 무겁거나, 네트워크가 느리거나, 알림창이 떠 있을 수 있어요. 잠시 뒤 다시 시도하거나 browser_tabs로 상태를 확인하세요.',
+          `Chrome did not respond for ${Math.round(timeoutMs / 1000)}s (${method}). ` +
+          'The page may be heavy, the network slow, or a dialog open. Retry shortly or check with browser_tabs.',
         ));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer, method });
@@ -120,7 +120,7 @@ export class CdpConnection {
       if (!p) return;
       this.pending.delete(msg.id);
       clearTimeout(p.timer);
-      if (msg.error) p.reject(new CdpmError(`${p.method} 실패: ${msg.error.message}`));
+      if (msg.error) p.reject(new CdpmError(`${p.method} failed: ${msg.error.message}`));
       else p.resolve(msg.result);
       return;
     }
@@ -150,7 +150,7 @@ export class CdpConnection {
     this.closed = true;
     for (const [, p] of this.pending) {
       clearTimeout(p.timer);
-      p.reject(new CdpmError(`CDP 연결이 끊어졌습니다 (${p.method}). 탭이 닫혔거나 Chrome이 종료됐을 수 있어요.`));
+      p.reject(new CdpmError(`CDP connection closed (${p.method}). The tab or Chrome may have closed.`));
     }
     this.pending.clear();
     for (const h of this.closedHandlers) h();

@@ -8,13 +8,13 @@ export function nowIso(): string {
 export function ago(iso: string | undefined, now = Date.now()): string {
   if (!iso) return '';
   const s = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
-  if (s < 3) return '방금';
-  if (s < 60) return `${s}초 전`;
+  if (s < 3) return 'just now';
+  if (s < 60) return `${s}s ago`;
   const m = Math.round(s / 60);
-  if (m < 60) return `${m}분 전`;
+  if (m < 60) return `${m}m ago`;
   const h = Math.round(m / 60);
-  if (h < 24) return `${h}시간 전`;
-  return `${Math.round(h / 24)}일 전`;
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
 }
 
 export function secondsSince(iso: string | undefined, now = Date.now()): number {

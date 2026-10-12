@@ -100,7 +100,7 @@ describe('여러 세션 오래 쓰기', { timeout: 60 * 60_000 }, () => {
       const c = clients[k];
       const agent = `s${k}-sub${i}`;
       const opened = await call(c, 'browser_tab_new', { agent, url: `${url}p?n=${i}` });
-      const tab = /새 탭을 열었어요: \d+번 \[(t\d+)\]/.exec(opened.text)?.[1];
+      const tab = /Opened new tab: tab \d+ \[(t\d+)\]/.exec(opened.text)?.[1];
       if (!tab) { errors.push(`탭 못 엶: ${opened.text.slice(-120)}`); return; }
       const steps = [
         await call(c, 'browser_navigate', { agent, tab, url: `${url}p?n=${i + 1}` }),

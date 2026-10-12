@@ -18,7 +18,7 @@ const lazy = {
   registry: () => import('./registry/store.js'),
 };
 
-const CLI_AGENT = '사람(CLI)';
+const CLI_AGENT = 'user (CLI)';
 
 const HELP = `cdpm ${VERSION} - CDP Manager
 

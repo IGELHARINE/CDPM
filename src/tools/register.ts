@@ -21,7 +21,7 @@ import {
   type TabKind, type TabView,
 } from '../service.js';
 import { MAX_SLOT, MIN_SLOT, PORT_BASE, portOf } from '../slots.js';
-import { ago, decodeUrl, josa, nowIso, pidAlive, secondsSince, shortUrl, sleep, truncate } from '../util.js';
+import { ago, decodeUrl, nowIso, pidAlive, secondsSince, shortUrl, sleep, truncate } from '../util.js';
 import { formatHeader, formatMessages, formatSlotStatus } from './format.js';
 import { readAfter, type ReadMode } from './read.js';
 
@@ -44,11 +44,11 @@ function multiSlotRefusal(agent: string, slot: number, allowed: boolean | undefi
   const others = [...m.keys()].filter((k) => k !== slot).sort((x, y) => x - y);
   if (others.length && !allowed) {
     const how = isClaudeCode()
-      ? `슬롯마다 다른 일이면 한 메시지 안에서 Agent 도구를 슬롯 수만큼 함께 불러 서브에이전트(subagent_type "cdpm-browser")를 한꺼번에 띄우고, ` +
-        `각자 자기 slot과 agent 이름(예: "${slot}번담당")으로 일하게 하세요. 결과물(보고서·HTML 조각 등)도 각 서브에이전트가 자기 몫을 쓰고 메인은 합치기만 하세요. `
-      : `슬롯마다 다른 일이면 서브에이전트(하위 에이전트)를 쓸 수 있을 때 슬롯마다 하나씩 맡기고, 없으면 슬롯마다 다른 agent 이름(예: "${slot}번담당")을 넣어 부르세요. `;
-    return `거절했어요: ${agent}은(는) 방금 ${others.join(', ')}번 슬롯을 쓰고 있어서 ${slot}번은 맡지 않아요. ` + how +
-      `한 에이전트가 여러 슬롯을 함께 봐야 하는 일(비교 등)이면 multiSlot: true를 넣어 다시 부르세요.`;
+      ? `For different jobs per slot, call the Agent tool once per slot in a single message to launch subagents (subagent_type "cdpm-browser") together, ` +
+        `each using its own slot and agent name (e.g. "slot${slot}-agent"). Each subagent writes its own share of the output (report, HTML fragment, etc.); main only merges. `
+      : `For different jobs per slot, give each slot its own subagent if available; otherwise use a distinct agent name per slot (e.g. "slot${slot}-agent"). `;
+    return `Refused: ${agent} just used slot ${others.join(', ')}, so it won't take slot ${slot}. ` + how +
+      `If one agent must handle several slots together (e.g. comparing), call again with multiSlot: true.`;
   }
   m.set(slot, now);
   recentSlots.set(agent, m);
@@ -57,20 +57,20 @@ function multiSlotRefusal(agent: string, slot: number, allowed: boolean | undefi
 
 export const DEFAULT_AGENT = `claude-${randomBytes(2).toString('hex')}`;
 
-const SLOT_RANGE = `슬롯은 ${MIN_SLOT}~${MAX_SLOT}번 숫자입니다`;
-const slotArg = z.number({ error: (iss) => (iss.input === undefined ? `slot을 지정하세요 (${MIN_SLOT}~${MAX_SLOT}번 숫자)` : SLOT_RANGE) }).int(SLOT_RANGE).min(MIN_SLOT, SLOT_RANGE).max(MAX_SLOT, SLOT_RANGE)
-  .describe(`브라우저 슬롯 번호 ${MIN_SLOT}~${MAX_SLOT}. 사용자가 "3번", "3번 브라우저"라고 하면 3. 사용자가 ${PORT_BASE + 3}처럼 포트로 말하면 ${PORT_BASE}을 빼서 슬롯으로 바꾼다.`);
+const SLOT_RANGE = `slot must be a number ${MIN_SLOT}-${MAX_SLOT}`;
+const slotArg = z.number({ error: (iss) => (iss.input === undefined ? `slot is required (number ${MIN_SLOT}-${MAX_SLOT})` : SLOT_RANGE) }).int(SLOT_RANGE).min(MIN_SLOT, SLOT_RANGE).max(MAX_SLOT, SLOT_RANGE)
+  .describe(`Browser slot ${MIN_SLOT}-${MAX_SLOT}. "3", "slot 3", "browser 3" → 3. If the user gives a port like ${PORT_BASE + 3}, subtract ${PORT_BASE}.`);
 const agentArg = z.string().min(1).max(40).optional()
-  .describe(`내 이름. 다른 에이전트에게 보이는 표시용 이름이다. 서브에이전트는 반드시 자기 이름을 넣는다. 생략하면 "${DEFAULT_AGENT}".`);
+  .describe(`Your display name, shown to other agents. Subagents must always set it. Default "${DEFAULT_AGENT}".`);
 const tabArg = z.union([z.string(), z.number()]).optional()
-  .describe('대상 탭: 번호(1, 2…) 또는 ID("t7"). 여러 에이전트가 같은 슬롯을 쓸 때는 바뀌지 않는 ID를 쓴다. 탭이 여러 개일 때 조작 도구는 반드시 지정해야 한다.');
+  .describe('Target tab: number (1, 2…) or ID ("t7"). Use the stable ID when agents share a slot. Required for action tools when there are multiple tabs.');
 const summaryArg = z.string().max(120).optional()
-  .describe('지금 하는 일을 한 줄로 (예: "쿠팡 노트북 가격 비교 중"). browser_status에 보인다 (상태줄에는 안 보임). 생략하면 이전 요약 유지.');
+  .describe('One-line note of what you are doing (e.g. "comparing laptop prices"). Shown in browser_status (not the status line). Omit to keep the previous one.');
 const multiSlotArg = z.boolean().optional()
-  .describe('한 에이전트가 여러 슬롯을 함께 봐야 하는 일(비교 등)에만 true. 평소에는 넣지 않는다 (한 에이전트 = 한 슬롯, 나머지는 서브에이전트)');
+  .describe('true only when one agent must handle several slots together (e.g. comparing). Normally omit (one agent = one slot; use subagents for the rest)');
 const readArg = z.enum(['text', 'snapshot', 'changes']).optional()
-  .describe('조작한 뒤 화면을 결과에 바로 붙인다 (따로 읽으러 갈 필요 없음): text=본문, snapshot=스냅샷 1쪽(ref 포함), changes=직전 스냅샷 대비 새로 생기거나 사라진 줄만 (가장 짧음, 다른 페이지로 바뀌면 전체)');
-const pageArg = z.number().int().min(1).optional().describe('쪽 번호 (긴 결과를 나눠 볼 때, 기본 1)');
+  .describe('Append the page after the action (no separate read needed): text=body text, snapshot=snapshot page 1 (with refs), changes=only lines added/removed since your last snapshot (shortest; full page if the page changed)');
+const pageArg = z.number().int().min(1).optional().describe('Page number for long output (default 1)');
 
 interface Out {
   text: string;
@@ -81,7 +81,7 @@ const textResult = (text: string, isError = false): CallToolResult => ({ content
 
 function errorText(e: unknown): string {
   if (e instanceof CdpmError) return e.message;
-  return `오류: ${(e as Error)?.message ?? String(e)}`;
+  return `Error: ${(e as Error)?.message ?? String(e)}`;
 }
 
 /** 탭에 걸린 요청 막기 규칙 중, 건 프로세스가 아직 살아 있는 것. */
@@ -113,7 +113,7 @@ async function header(slot: number, agent: string, tabs: TabView[], opts: { exec
   const warnings = [...(opts.warnings ?? [])];
   for (const t of tabs) {
     const blocks = liveBlocks(t);
-    if (blocks.length) warnings.push(`[${t.id}]에서 요청을 막는 중: ${blocks.map((b) => `${b.pattern} (${b.agent})`).join(', ')}`);
+    if (blocks.length) warnings.push(`[${t.id}] blocking requests: ${blocks.map((b) => `${b.pattern} (${b.agent})`).join(', ')}`);
   }
   const dialogs = dialogsOf(slot, tabs);
   // 탭 목록이 이 에이전트가 지난번에 본 것과 같고 경고·알림창·메시지도 없으면 한 줄로 (읽을 양을 줄여 다음 판단이 빨라지게)
@@ -125,7 +125,7 @@ async function header(slot: number, agent: string, tabs: TabView[], opts: { exec
   lastTabList.set(key, sig);
   if (opts.compact && same && !warnings.length && !messages.length && !dialogs.size) {
     const exec = tabs.find((t) => t.targetId === opts.executed);
-    return `[${slot}번] 탭 ${tabs.length}개${exec ? ` · ${exec.no}번 탭 [${exec.id}]에서 실행함` : ''} (탭 목록 변화 없음)`;
+    return `[Slot ${slot}] ${tabs.length} tab(s)${exec ? ` · ran on tab ${exec.no} [${exec.id}]` : ''} (tab list unchanged)`;
   }
   return formatHeader({ slot, tabs, executedTargetId: opts.executed, warnings, dialogs, messages });
 }
@@ -199,23 +199,23 @@ async function onTab(args: TabCall, kind: TabKind, action: string | null, fn: (s
       if (e instanceof act.PausedInterrupt) return textResult(`${e.message}\n${pausedRefusal(slot) ?? ''}`, true);
       // 행동 도중 알림창이 뜬 것은 실패가 아니다 (클릭은 이루어졌음).
       if (!(e instanceof act.DialogInterrupt)) throw e;
-      out = { text: `행동은 실행됐고, 그 결과 ${e.message}` };
+      out = { text: `Action done. Then: ${e.message}` };
     }
     tabs = await syncTabs(slot).catch(() => tabs);
     if (action) {
       // 행동·요약·탭 제목을 기록부에 한 번에 쓴다 (여러 에이전트가 동시에 쓸 때 잠금 횟수를 줄임)
       const acted = tabs.find((t) => t.targetId === tab.targetId);
       const ok = await recordAction(slot, tab.targetId, agent, action, args.summary, !args.agent, acted ? acted.title || shortUrl(acted.url) : undefined);
-      if (!ok) warnings.push('기록 실패: 공용 기록부를 잠그지 못해 이번 행동은 기록되지 않았어요.');
+      if (!ok) warnings.push('Not logged: could not lock the shared registry, so this action was not recorded.');
     }
     const opened = tabs.filter((t) => !before.has(t.targetId));
     if (opened.length) {
-      out.text += `\n새 탭이 열렸어요: ${opened.map((t) => `${t.no}번 [${t.id}] ${t.url === 'about:blank' || !t.url ? '(로딩 중)' : truncate(t.title || shortUrl(t.url), 40)}`).join(', ')}`;
+      out.text += `\nNew tab opened: ${opened.map((t) => `tab ${t.no} [${t.id}] ${t.url === 'about:blank' || !t.url ? '(loading)' : truncate(t.title || shortUrl(t.url), 40)}`).join(', ')}`;
     }
     if (action && !session.dialog) {
       // 클릭 등으로 페이지가 전체 화면이 되면 사용자 창 상태가 바뀌므로 바로 해제한다.
       const fs = await session.evaluate<boolean>('(() => { if (!document.fullscreenElement) return false; document.exitFullscreen(); return true; })()', { timeoutMs: 1500 }).catch(() => undefined);
-      if (fs?.value) out.text += '\n[주의] 페이지가 전체 화면으로 바뀌어서 바로 해제했어요 (CDPM은 창 상태를 바꾸지 않습니다).';
+      if (fs?.value) out.text += '\n[warning] The page went fullscreen; exited it right away (CDPM never changes window state).';
     }
     return compose(await header(slot, agent, tabs, { executed: tab.targetId, warnings, compact: true }), out);
   } catch (e) {
@@ -234,8 +234,8 @@ async function guard(fn: () => Promise<CallToolResult>): Promise<CallToolResult>
 
 function pageFooter(p: { page: number; pages: number }, total: number, extra = ''): string {
   if (p.pages <= 1) return '';
-  const next = p.page < p.pages ? ` · 다음: page=${p.page + 1}` : ' · 마지막 쪽';
-  return `\n\n— ${p.page}/${p.pages}쪽 (전체 ${total.toLocaleString()}자)${next}${extra}`;
+  const next = p.page < p.pages ? ` · next: page=${p.page + 1}` : ' · last page';
+  return `\n\n— page ${p.page}/${p.pages} (${total.toLocaleString()} chars total)${next}${extra}`;
 }
 
 // ---------- 네트워크 표시 ----------
@@ -250,8 +250,8 @@ function fmtSize(n?: number) {
 function netLine(e: NetEntry, rules: BlockRule[] = []): string {
   const blockedBy = e.blockedBy ?? (e.failed && /BLOCKED_BY_CLIENT/.test(e.failed) ? rules.find((r) => wildcard(r.pattern).test(e.url))?.pattern : undefined);
   const status = e.failed
-    ? `실패 ${e.failed}${blockedBy ? ` (막음: ${blockedBy})` : ''}`
-    : e.status !== undefined ? String(e.status) + (e.fromCache ? ' (캐시)' : '') : '…';
+    ? `failed ${e.failed}${blockedBy ? ` (blocked: ${blockedBy})` : ''}`
+    : e.status !== undefined ? String(e.status) + (e.fromCache ? ' (cache)' : '') : '…';
   const parts = [`n${e.no}`, e.method, status, e.type, fmtSize(e.size), e.durationMs !== undefined ? `${e.durationMs}ms` : ''].filter(Boolean);
   return `${parts.join('  ')}  ${truncate(decodeUrl(e.url), 140)}`;
 }
@@ -259,14 +259,14 @@ function netLine(e: NetEntry, rules: BlockRule[] = []): string {
 /** 응답 본문 (글자면 앞 20,000자, 바이너리면 크기만). */
 async function responseBody(s: PageSession, e: NetEntry): Promise<string> {
   const b = await s.send<{ body: string; base64Encoded: boolean }>('Network.getResponseBody', { requestId: e.requestId }, 10_000).catch(() => undefined);
-  if (!b) return '  (가져올 수 없어요: 아직 받는 중이거나, Chrome이 이미 버렸거나, 리다이렉트예요)';
-  if (b.base64Encoded && !/json|text|xml|javascript|html/i.test(e.mimeType ?? '')) return `  (바이너리 ${fmtSize(Buffer.from(b.body, 'base64').length)}, ${e.mimeType})`;
+  if (!b) return '  (unavailable: still loading, already discarded by Chrome, or a redirect)';
+  if (b.base64Encoded && !/json|text|xml|javascript|html/i.test(e.mimeType ?? '')) return `  (binary ${fmtSize(Buffer.from(b.body, 'base64').length)}, ${e.mimeType})`;
   const raw = b.base64Encoded ? Buffer.from(b.body, 'base64').toString('utf8') : b.body;
-  return raw.length > 20_000 ? raw.slice(0, 20_000) + `\n… (잘렸음: 전체 ${raw.length.toLocaleString()}자)` : raw;
+  return raw.length > 20_000 ? raw.slice(0, 20_000) + `\n… (truncated: ${raw.length.toLocaleString()} chars total)` : raw;
 }
 
 function headersText(h?: Record<string, string>): string {
-  if (!h) return '  (없음)';
+  if (!h) return '  (none)';
   return Object.entries(h).map(([k, v]) => `  ${k}: ${truncate(String(v), 300)}`).join('\n');
 }
 
@@ -281,13 +281,13 @@ function normalizePattern(p: string): string {
 export function registerTools(server: McpServer) {
   // ---------- 슬롯·탭 ----------
   server.registerTool('browser_status', {
-    title: '슬롯 현황',
-    description: '떠 있는 Chrome 슬롯(1~30번)과 각 슬롯의 탭, 연 사람, 마지막 행동, 한 줄 요약을 보여준다. slot을 주면 그 슬롯만.',
+    title: 'Slot status',
+    description: 'Shows running Chrome slots (1-30) with their tabs, opener, last action and one-line summary. Pass slot for just that slot.',
     inputSchema: { slot: slotArg.optional(), agent: agentArg },
   }, async ({ slot, agent }) => guard(async () => {
     const live = await liveSlots();
     const target = slot ? live.filter(([s]) => s === slot) : live;
-    if (!target.length) return textResult(slot ? `${slot}번 Chrome은 떠 있지 않아요.` : '떠 있는 슬롯이 없어요. 사용자가 켜 달라고 하면 browser_launch로 켜세요.');
+    if (!target.length) return textResult(slot ? `Slot ${slot} Chrome is not running.` : 'No slots running. Start one with browser_launch when the user asks.');
     const parts: string[] = [];
     for (const [s] of target) {
       const tabs = await syncTabs(s).catch(() => null);
@@ -295,31 +295,31 @@ export function registerTools(server: McpServer) {
       let part = formatSlotStatus(s, rec ?? { launchedAt: new Date().toISOString(), nextTabSeq: 1, tabs: {} }, tabs);
       for (const t of tabs ?? []) {
         const d = knownDialog(s, t.targetId);
-        if (d) part += `\n  [주의] ${d.type} 알림창 떠 있음 ([${t.id}]): "${truncate(d.message, 80)}"`;
+        if (d) part += `\n  [warning] dialog open (${d.type}) ([${t.id}]): "${truncate(d.message, 80)}"`;
       }
       parts.push(part);
     }
     const me = agent ?? DEFAULT_AGENT;
-    return textResult(`${parts.join('\n\n')}\n\n(내 이름: ${me})`);
+    return textResult(`${parts.join('\n\n')}\n\n(your name: ${me})`);
   }));
 
   server.registerTool('browser_launch', {
-    title: '슬롯 켜기',
-    description: '슬롯 Chrome을 켠다. 사용자가 켜 달라고 명시적으로 말했을 때만 호출한다 (다른 도구는 꺼진 슬롯을 켜지 않는다). ' +
-      'slot을 생략하면 비어 있는 슬롯 중 가장 작은 번호로 켠다. 이미 떠 있으면 붙기만 한다. ' +
-      '창 모드(브라우저 보임)인지 헤드리스(안 보임)인지는 사용자가 정한다: 사용자가 말하지 않았으면 추측하지 말고 먼저 물어본 뒤 headless를 넣어 호출한다. ' +
-      'headless 없이 꺼진 슬롯을 켜려 하면 켜지 않고 확인 요청만 돌려준다. ' +
-      '여러 슬롯은 slots(번호 목록)나 count(개수)로 한 번에 켠다 (작은 번호부터 차례로). 슬롯마다 다른 일을 맡기면, 켠 뒤 슬롯마다 서브에이전트를 띄워 병렬로 처리한다.',
+    title: 'Launch slot',
+    description: 'Starts slot Chrome. Call only when the user explicitly asks (other tools never start a closed slot). ' +
+      'Without slot, uses the lowest free slot. If already running, just attaches. ' +
+      'The user decides windowed (visible) vs headless (hidden): headless: true only if they say "headless/hidden". If unstated, don\'t guess; ask first, then call with headless. ' +
+      'Starting a closed slot without headless only returns a confirmation request. ' +
+      'Start several slots at once with slots (list) or count (lowest first). For different jobs per slot, after launching give each slot its own subagent in parallel.',
     inputSchema: {
-      slot: slotArg.optional().describe('켤 슬롯 하나 (1~30). 사용자가 번호를 말하지 않았으면 생략 → 비어 있는 가장 작은 번호'),
-      slots: z.array(slotArg).optional().describe('여러 슬롯을 한 번에 켤 때 번호 목록 (예: [1,2,3]). 작은 번호부터 차례로 켠다'),
-      count: z.number().int().min(1).max(MAX_SLOT).optional().describe('번호 없이 "3개 켜줘"처럼 개수만 말했을 때: 비어 있는 슬롯을 작은 번호부터 그 개수만큼 켠다'),
-      url: z.string().optional().describe('켜는 모든 슬롯에 같은 주소를 연다 (예: "https://mail.google.com"). 슬롯마다 주소가 다르거나 일부 슬롯만 열 때는 url을 쓰지 말고 urls를 쓴다. 시작 페이지를 알면 넣어서, 서브에이전트가 따로 이동할 필요가 없게 한다'),
-      urls: z.array(z.string()).optional().describe('슬롯마다 다른 시작 주소. slots에 준 순서(count면 켜지는 번호 순서)대로 짝지어진다. 열지 않을 슬롯은 ""(빈 탭). 예: slots [1,2], urls ["https://www.wehago.com", "https://test.igel.kr"] → 1번은 위하고, 2번은 test.igel.kr'),
+      slot: slotArg.optional().describe('One slot to start (1-30). Omit if the user gave no number → lowest free slot'),
+      slots: z.array(slotArg).optional().describe('Slot numbers to start at once (e.g. [1,2,3]), lowest first'),
+      count: z.number().int().min(1).max(MAX_SLOT).optional().describe('When the user gives only a count ("start 3"): starts that many free slots, lowest first'),
+      url: z.string().optional().describe('Same start URL for every launched slot (e.g. "https://mail.google.com"). For per-slot or partial URLs use urls instead. Pass it when the start page is known so subagents need no separate navigation'),
+      urls: z.array(z.string()).optional().describe('Per-slot start URLs, paired in slots order (count: launch order). "" = blank tab. E.g. slots [1,2], urls ["https://www.wehago.com", "https://test.igel.kr"] → 1 opens wehago, 2 opens test.igel.kr'),
       agent: agentArg,
-      headless: z.boolean().optional().describe('false = 창 모드(브라우저 보임), true = 헤드리스(안 보임). 사용자가 고른 값만 넣는다. 처음 켤 때만 적용'),
-      proxy: z.string().optional().describe('사용자가 프록시를 써 달라고 했을 때만 넣는다 (아니면 절대 넣지 않는다). 사용자가 준 그대로: "1.2.3.4:8080", "http://아이디:비번@주소:포트", "socks5://주소:포트", "주소:포트:아이디:비번" 등. 켜는 모든 슬롯에 적용, 처음 켤 때만'),
-      proxies: z.array(z.string()).optional().describe('슬롯마다 다른 프록시. slots에 준 순서(count면 켜지는 번호 순서)대로 짝지어진다'),
+      headless: z.boolean().optional().describe('false = windowed (visible), true = headless (hidden). true only if the user says "headless/hidden/no window", false for "visible/headful". If unstated, omit and ask first (no guessing). Applies only on first launch'),
+      proxy: z.string().optional().describe('Only when the user asks for a proxy (never otherwise). As given: "1.2.3.4:8080", "http://user:pass@host:port", "socks5://host:port", "host:port:user:pass", etc. Applies to all launched slots, first launch only'),
+      proxies: z.array(z.string()).optional().describe('Per-slot proxies, paired in slots order (count: launch order)'),
     },
   }, async ({ slot: wanted, slots: wantedList, count, agent, headless, url, urls, proxy, proxies }) => guard(async () => {
     const me = agent ?? DEFAULT_AGENT;
@@ -330,7 +330,7 @@ export function registerTools(server: McpServer) {
     else {
       targets = await freeSlots(count ?? 1);
       if (targets.length < (count ?? 1)) {
-        throw new CdpmError(`비어 있는 슬롯이 ${targets.length}개뿐이에요 (요청 ${count ?? 1}개). 안 쓰는 슬롯을 browser_close로 꺼 주세요.`);
+        throw new CdpmError(`Only ${targets.length} free slot(s) (requested ${count ?? 1}). Close unused slots with browser_close.`);
       }
     }
     // 시작 주소: urls는 slots에 준 순서(없으면 켜지는 번호 순서)대로, 나머지는 url
@@ -342,7 +342,7 @@ export function registerTools(server: McpServer) {
     order.forEach((t, i) => { const p = proxies?.[i] ?? proxy; if (p) proxyOf.set(t, parseProxy(p)); });
     for (const u of startUrl.values()) {
       const ext = act.externalScheme(u);
-      if (ext) throw new CdpmError(`시작 주소로 ${ext} 주소(${u.slice(0, 80)})는 쓸 수 없어요 (사용자 PC의 다른 프로그램이 실행돼요).`);
+      if (ext) throw new CdpmError(`Can't use a ${ext} URL (${u.slice(0, 80)}) as start URL (it would launch another program on the user's PC).`);
     }
     targets.sort((x, y) => x - y);
     // 모드를 사용자가 정하지 않았으면 꺼진 슬롯은 켜지 않는다 (이미 떠 있으면 그대로 붙는다).
@@ -350,8 +350,8 @@ export function registerTools(server: McpServer) {
       const states = await Promise.all(targets.map((t) => probe(t)));
       const closed = targets.filter((_, i) => states[i].state !== 'chrome');
       if (closed.length) {
-        return textResult(`[확인 필요] ${closed.join(', ')}번은 아직 켜지 않았어요. 사용자에게 창이 보이게(창 모드) 켤지, 안 보이게(헤드리스) 켤지 한 번만 물어본 뒤 ` +
-          `headless(창 모드 false, 헤드리스 true)를 넣어 다시 호출하세요.`);
+        return textResult(`[Confirm] Slot ${closed.join(', ')} not started yet. Ask the user once: visible window or headless (hidden)? ` +
+          `Then call again with headless (windowed false, headless true).`);
       }
     }
     // 작은 번호부터 차례로 켠다 (작업표시줄에도 그 순서로 놓인다). 한 번의 호출로 끝내서 왕복을 줄인다.
@@ -360,35 +360,35 @@ export function registerTools(server: McpServer) {
     for (const slot of targets) {
       const { launched } = await launchSlot(slot, me, { headless, url: startUrl.get(slot), proxy: proxyOf.get(slot) });
       anyLaunched ||= launched;
-      if (launched) await recordAction(slot, '', me, '켜기', undefined, !agent);
+      if (launched) await recordAction(slot, '', me, 'launch', undefined, !agent);
       const running = readRegistry().slots[String(slot)];
-      const mode = running?.headless ? '헤드리스' : '창 모드';
-      const via = running?.proxy ? `, 프록시 ${running.proxy}` : '';
-      let line = launched ? `${slot}번 Chrome을 ${mode}로 켰어요 (포트 ${portOf(slot)}${via})${startUrl.get(slot) ? ` → ${truncate(startUrl.get(slot)!, 60)} 여는 중` : ''}.` : `${slot}번 Chrome은 이미 떠 있어요. 붙었어요.`;
+      const mode = running?.headless ? 'headless' : 'windowed';
+      const via = running?.proxy ? `, proxy ${running.proxy}` : '';
+      let line = launched ? `Started slot ${slot} Chrome ${mode} (port ${portOf(slot)}${via})${startUrl.get(slot) ? ` → opening ${truncate(startUrl.get(slot)!, 60)}` : ''}.` : `Slot ${slot} Chrome already running; attached.`;
       if (!launched && headless !== undefined && headless !== !!running?.headless) {
-        line += ` [주의] 이미 ${mode}로 떠 있어서 그대로 붙었어요. 바꾸려면 browser_close로 끈 뒤 다시 켜세요.`;
+        line += ` [warning] Already running ${mode}, attached as is. To change, browser_close then launch again.`;
       }
       const askedProxy = proxyOf.get(slot);
       if (!launched && askedProxy && running?.proxy !== describeProxy(askedProxy)) {
-        line += ` [주의] 이미 ${running?.proxy ? `프록시 ${running.proxy}로` : '프록시 없이'} 떠 있어서 요청한 프록시를 붙이지 못했어요. 붙이려면 browser_close로 끈 뒤 proxy를 넣어 다시 켜세요.`;
+        line += ` [warning] Already running ${running?.proxy ? `with proxy ${running.proxy}` : 'without proxy'}, so the requested proxy was not applied. To apply, browser_close then launch again with proxy.`;
       }
       lines.push(line);
     }
     let msg = lines.join('\n');
     if (anyLaunched && picked) {
-      msg += targets.length === 1 ? '\n번호를 지정하지 않아서 비어 있는 가장 작은 슬롯을 골랐어요.' : '\n번호를 지정하지 않아서 비어 있는 슬롯을 작은 번호부터 골랐어요.';
+      msg += targets.length === 1 ? '\nNo number given; picked the lowest free slot.' : '\nNo numbers given; picked free slots, lowest first.';
     }
     if (targets.length > 1 && !isClaudeCode()) {
-      msg += '\n[다음 할 일] 슬롯마다 다른 일을 맡겼다면, 서브에이전트(하위 에이전트)를 쓸 수 있으면 슬롯마다 하나씩 맡기고, 없으면 슬롯마다 다른 agent 이름(예: "1번담당")을 넣어 차례로 처리하세요. ' +
-        '사용자 로그인이 필요하면 "됐다고 알려 달라"고 하지 말고 browser_wait url/gone/text로 완료를 감지하세요.';
+      msg += '\n[Next] For different jobs per slot, give each slot its own subagent if available; otherwise process them in turn with a distinct agent name per slot (e.g. "slot1-agent"). ' +
+        'If the user must log in, don\'t ask them to "tell me when done"; detect completion with browser_wait url/gone/text.';
     }
     if (targets.length > 1 && isClaudeCode()) {
-      msg += '\n[다음 할 일] 슬롯마다 다른 일을 맡겼다면, 지금 한 메시지 안에서 Agent 도구를 슬롯 수만큼 함께 불러(run_in_background: true) 서브에이전트(subagent_type "cdpm-browser")를 한꺼번에 띄우세요. 지시는 슬롯 번호·agent 이름·할 일만 1~3줄로 짧게 ' +
-        '(각자 slot 번호와 자기 agent 이름을 쓰게). 주소 이동부터 서브에이전트가 하고, 메인은 슬롯마다 이동해 두거나 돌아가며 직접 처리하지 마세요. ' +
-        '사용자 로그인이 필요하면 "됐다고 알려 달라"고 하지 말고, 서브에이전트가 browser_wait url/gone/text로 스스로 감지하게 하세요.';
+      msg += '\n[Next] For different jobs per slot, now call the Agent tool once per slot in a single message (run_in_background: true) to launch subagents (subagent_type "cdpm-browser") together. Prompts: slot number, agent name, task only, 1-3 lines ' +
+        '(each uses its slot number and own agent name). Subagents do everything from the first navigation; main must not pre-navigate slots or process them in turn. ' +
+        'If the user must log in, don\'t ask them to "tell me when done"; let subagents detect it with browser_wait url/gone/text.';
       if (targets.length > 20) {
-        msg += `\n[주의] 서브에이전트는 동시에 20개까지만 떠요 (21번째부터는 거절됨). ${targets.length}개 중 20개를 먼저 띄우고, 끝나는 대로 나머지 ${targets.length - 20}개를 띄우세요. ` +
-          '한 번에 다 띄우려면 사용자가 환경변수 CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS를 늘려야 해요.';
+        msg += `\n[warning] At most 20 subagents run at once (the 21st+ is refused). Launch 20 of ${targets.length} first, then the remaining ${targets.length - 20} as they finish. ` +
+          'To launch all at once, the user must raise the env var CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS.';
       }
     }
     const first = targets[0];
@@ -396,20 +396,19 @@ export function registerTools(server: McpServer) {
   }));
 
   server.registerTool('browser_close', {
-    title: '슬롯 종료',
-    description: '슬롯 Chrome을 정상 종료한다 (세션·쿠키 저장). 프로필(로그인 정보)은 지우지 않는다. 다른 에이전트가 최근에 썼으면 결과에 알려준다.',
+    title: 'Close slot',
+    description: 'Closes slot Chrome cleanly (session and cookies saved). The profile (logins) is kept. Reports if another agent used it recently.',
     inputSchema: { slot: slotArg, agent: agentArg },
   }, async ({ slot, agent }) => guard(() => withSlotLock(slot, async () => {
     const me = agent ?? DEFAULT_AGENT;
     if ((await probe(slot)).state !== 'chrome') {
       await forgetSlot(slot);
-      return textResult(`${slot}번 Chrome은 이미 꺼져 있어요.`);
+      return textResult(`Slot ${slot} Chrome is already closed.`);
     }
     const rec = readRegistry().slots[String(slot)];
     const warnings: string[] = [];
     if (rec?.last && rec.last.agent !== me && secondsSince(rec.last.at) <= 120) {
-      const when = ago(rec.last.at);
-      warnings.push(`${josa(rec.last.agent, '이', '가')} ${when === '방금' ? when : `${when}에`} 이 슬롯을 썼어요.`);
+      warnings.push(`${rec.last.agent} used this slot (${ago(rec.last.at)}).`);
     }
     const browser = await browserConnection(slot);
     await browser.send('Browser.close', {}, 5000).catch(() => undefined);
@@ -417,12 +416,12 @@ export function registerTools(server: McpServer) {
     // 포트가 닫혀도 프로세스는 잠깐 더 살아 프로필을 붙잡는다. 끝날 때까지 기다려야 바로 다시 켜도 안전하다.
     for (let i = 0; rec?.pid && i < 50 && pidAlive(rec.pid); i++) await sleep(100);
     await forgetSlot(slot);
-    return textResult([...warnings, `${slot}번 Chrome을 종료했어요. 프로필은 남아 있어서 다음에 켜면 로그인이 유지돼요.`].join('\n'));
+    return textResult([...warnings, `Closed slot ${slot} Chrome. The profile is kept, so logins persist next launch.`].join('\n'));
   })));
 
   server.registerTool('browser_tabs', {
-    title: '탭 목록',
-    description: '슬롯의 탭 목록: 번호, ID, 제목, 주소, 연 사람, 마지막 행동, 탭별 요약(summary를 넣은 행동만 갱신). "·앞"은 그 창에서 지금 화면 앞에 보이는 탭 (창이 여러 개면 창마다 하나).',
+    title: 'List tabs',
+    description: 'Slot tab list: number, ID, title, URL, opener, last action, per-tab summary (updated only by actions with summary). "·front" marks the tab currently in front in its window (one per window).',
     inputSchema: { slot: slotArg, agent: agentArg },
   }, async ({ slot, agent }) => guard(async () => {
     const me = agent ?? DEFAULT_AGENT;
@@ -430,14 +429,14 @@ export function registerTools(server: McpServer) {
     const tabs = await syncTabs(slot);
     const head = await header(slot, me, tabs);
     const detail = tabs.filter((t) => t.rec.summary)
-      .map((t) => `${t.no}. [${t.id}] 요약: ${t.rec.summary!.agent} — ${t.rec.summary!.text} (${ago(t.rec.summary!.at)})`);
-    return textResult(`${head}\n---\n${detail.length ? detail.join('\n') : '탭별 요약 없음'}`);
+      .map((t) => `${t.no}. [${t.id}] summary: ${t.rec.summary!.agent} — ${t.rec.summary!.text} (${ago(t.rec.summary!.at)})`);
+    return textResult(`${head}\n---\n${detail.length ? detail.join('\n') : 'No per-tab summaries'}`);
   }));
 
   server.registerTool('browser_tab_new', {
-    title: '새 탭',
-    description: '슬롯에 새 탭을 열고 탭 ID를 돌려준다. 여러 에이전트가 같은 슬롯을 쓸 때는 자기 전용 탭을 열고 그 ID로만 작업하면 서로 섞이지 않는다.',
-    inputSchema: { slot: slotArg, agent: agentArg, url: z.string().optional().describe('열 주소 (생략하면 빈 탭)'), summary: summaryArg },
+    title: 'New tab',
+    description: 'Opens a new tab in the slot and returns its ID. When agents share a slot, open your own tab and work only by its ID to avoid mixing.',
+    inputSchema: { slot: slotArg, agent: agentArg, url: z.string().optional().describe('URL to open (omit for blank tab)'), summary: summaryArg },
   }, async ({ slot, agent, url, summary }) => guard(async () => {
     const me = agent ?? DEFAULT_AGENT;
     const paused = pausedRefusal(slot);
@@ -446,22 +445,22 @@ export function registerTools(server: McpServer) {
     const browser = await browserConnection(slot);
     const target = url ? (/^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `https://${url}`) : 'about:blank';
     const ext = act.externalScheme(target);
-    if (ext) throw new CdpmError(`${ext} 주소(${target.slice(0, 80)})는 열 수 없어요 (사용자 PC의 다른 프로그램이 실행돼요).`);
+    if (ext) throw new CdpmError(`Can't open a ${ext} URL (${target.slice(0, 80)}) (it would launch another program on the user's PC).`);
     // background: 사용자가 보고 있는 탭을 바꾸지 않는다.
     const { targetId } = await browser.send<{ targetId: string }>('Target.createTarget', { url: target, background: true });
     markCreated(targetId, me);
     lastTabOf.set(`${slot}:${me}`, targetId);
     await syncTabs(slot);
-    await recordAction(slot, targetId, me, '탭 열기', summary);
+    await recordAction(slot, targetId, me, 'open tab', summary);
     const tabs = await syncTabs(slot);
     const tab = tabs.find((t) => t.targetId === targetId);
-    return compose(await header(slot, me, tabs, { executed: targetId }), { text: `새 탭을 열었어요: ${tab ? `${tab.no}번 [${tab.id}]` : targetId}${url ? ` → ${target} (로딩 중일 수 있어요)` : ''}` });
+    return compose(await header(slot, me, tabs, { executed: targetId }), { text: `Opened new tab: ${tab ? `tab ${tab.no} [${tab.id}]` : targetId}${url ? ` → ${target} (may still be loading)` : ''}` });
   }));
 
   server.registerTool('browser_tab_close', {
-    title: '탭 닫기',
-    description: '탭을 닫는다. tab은 반드시 지정한다.',
-    inputSchema: { slot: slotArg, agent: agentArg, tab: z.union([z.string(), z.number()]).describe('닫을 탭: 번호 또는 ID("t7")') },
+    title: 'Close tab',
+    description: 'Closes a tab. tab is required.',
+    inputSchema: { slot: slotArg, agent: agentArg, tab: z.union([z.string(), z.number()]).describe('Tab to close: number or ID ("t7")') },
   }, async ({ slot, agent, tab }) => guard(async () => {
     const me = agent ?? DEFAULT_AGENT;
     const paused = pausedRefusal(slot);
@@ -475,32 +474,32 @@ export function registerTools(server: McpServer) {
     await browser.send('Target.closeTarget', { targetId: picked.tab.targetId });
     await sleep(200);
     tabs = await syncTabs(slot);
-    return textResult(`${await header(slot, me, tabs, { warnings })}\n---\n탭을 닫았어요: ${picked.tab.no}번 [${picked.tab.id}] ${picked.tab.title}`);
+    return textResult(`${await header(slot, me, tabs, { warnings })}\n---\nClosed tab: tab ${picked.tab.no} [${picked.tab.id}] ${picked.tab.title}`);
   }));
 
   server.registerTool('browser_tab_select', {
-    title: '탭 앞으로',
-    description: '탭을 Chrome 창 맨 앞으로 가져온다. 사람이 보는 화면이 바뀌므로 사용자가 원할 때만 쓴다. (뒤에 있는 탭도 읽기·조작·캡처가 되므로 작업하려고 앞으로 가져올 필요는 없다.)',
-    inputSchema: { slot: slotArg, agent: agentArg, tab: z.union([z.string(), z.number()]).describe('앞으로 가져올 탭: 번호 또는 ID') },
-  }, async (args) => onTab(args, 'action', '탭 선택', async (s, tab) => {
+    title: 'Bring tab to front',
+    description: 'Brings a tab to the front of its Chrome window. Changes what the user sees, so use only when the user wants it. (Background tabs can be read, operated and captured; no need to bring them forward to work.)',
+    inputSchema: { slot: slotArg, agent: agentArg, tab: z.union([z.string(), z.number()]).describe('Tab to bring forward: number or ID') },
+  }, async (args) => onTab(args, 'action', 'select tab', async (s, tab) => {
     const browser = await browserConnection(s.slot);
     await browser.send('Target.activateTarget', { targetId: tab.targetId });
     forgetSlotVisibility(s.slot);
     await sleep(150);
-    return { text: `${tab.no}번 [${tab.id}] 탭을 앞으로 가져왔어요.` };
+    return { text: `Brought tab ${tab.no} [${tab.id}] to front.` };
   }));
 
   // ---------- 보기 ----------
   server.registerTool('browser_snapshot', {
-    title: '화면 읽기',
-    description: '탭 화면을 접근성 트리 텍스트로 읽는다. 클릭·입력할 요소에는 [e12] 같은 ref가 붙는다. ' +
-      '긴 페이지는 위에서부터 쪽으로 나눠 1쪽만 보여준다 (page=2로 이어보기, ref 번호는 쪽이 달라도 같다). ' +
-      'find="글자"로 그 글자가 들어간 요소와 위쪽 맥락만, ref="e40"으로 그 요소 아래만 볼 수 있다. 페이지가 바뀌면 ref도 바뀌므로 조작 전에 다시 찍는다.',
+    title: 'Snapshot',
+    description: 'Reads the tab as accessibility-tree text. Clickable/typable elements get refs like [e12]. ' +
+      'Long pages are split; only page 1 (top) is shown (page=2 to continue; refs stay the same across pages). ' +
+      'find="text" shows only matching elements with their parent context; ref="e40" shows only that element\'s subtree. Refs change when the page changes, so re-snapshot before acting.',
     inputSchema: {
       slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, page: pageArg,
-      find: z.string().optional().describe('이 글자가 들어간 줄과 그 위쪽 맥락만 (대소문자·띄어쓰기 무시). 사이트 언어를 모르면 "제목|subject"처럼 | 로 여러 낱말'),
-      interactive: z.boolean().optional().describe('입력칸·버튼·링크 등 조작할 수 있는 요소(ref 있는 줄)만. Gmail 같은 큰 페이지에서 입력칸을 찾을 때 먼저 쓴다'),
-      ref: z.string().optional().describe('이 ref 요소와 그 아래만'),
+      find: z.string().optional().describe('Only lines containing this text, with parent context (ignores case and spaces). If unsure of site language, use | for alternatives, e.g. "제목|subject"'),
+      interactive: z.boolean().optional().describe('Only actionable elements (lines with refs): inputs, buttons, links. Use first to find inputs on big pages like Gmail'),
+      ref: z.string().optional().describe('Only this ref element and its subtree'),
     },
   }, async (args) => onTab(args, 'view', null, async (s, tab, agent) => {
     const page = args.page ?? 1;
@@ -510,100 +509,100 @@ export function registerTools(server: McpServer) {
     const full = page > 1 && cache && sameUrl && Date.now() - cache.at < 5 * 60_000 ? cache.text : (await takeSnapshot(s, agent)).text;
     // interactive: ref가 붙은 줄(조작할 수 있는 요소와 제목)만 → 큰 페이지에서도 몇 쪽 안에 입력칸·버튼이 다 보인다
     const text = args.interactive ? full.split('\n').filter((l) => /\[e\d+\]/.test(l)).map((l) => l.trimStart()).join('\n') : full;
-    if (!text) return { text: '(읽을 수 있는 요소가 없어요)' };
+    if (!text) return { text: '(no readable elements)' };
     if (args.ref) {
       const sub = subtree(text, args.ref);
-      if (!sub) throw new CdpmError(`[${args.ref}]를 이 스냅샷에서 찾지 못했어요. ref 없이 다시 찍어서 확인하세요.`);
+      if (!sub) throw new CdpmError(`[${args.ref}] not found in this snapshot. Re-snapshot without ref to check.`);
       const p = paginate(sub, page);
       return { text: p.body + pageFooter(p, sub.length) };
     }
     if (args.find) {
       const f = findLines(text, args.find);
-      if (!f.matches) return { text: `"${args.find}"이(가) 들어간 요소가 없어요. (전체 ${text.length.toLocaleString()}자)` };
+      if (!f.matches) return { text: `No elements contain "${args.find}". (${text.length.toLocaleString()} chars total)` };
       const p = paginate(f.body, page);
-      return { text: `${p.body}\n\n— "${args.find}" ${f.matches}곳${f.matches > 150 ? ' (처음 150곳만 표시)' : ''}${pageFooter(p, f.body.length)}` };
+      return { text: `${p.body}\n\n— "${args.find}": ${f.matches} match(es)${f.matches > 150 ? ' (first 150 shown)' : ''}${pageFooter(p, f.body.length)}` };
     }
     const p = paginate(text, page);
     const context = p.page > 1 ? ancestorsOf(text, p.start) : [];
-    const head = context.length ? `(이 쪽의 위쪽 맥락)\n${context.join('\n')}\n  ┄┄┄\n` : '';
-    return { text: head + p.body + pageFooter(p, text.length, ` · 글자로 찾기: find="…" · 영역만: ref="eN"${args.interactive ? '' : ' · 입력칸·버튼만: interactive=true'}`) };
+    const head = context.length ? `(parent context of this page)\n${context.join('\n')}\n  ┄┄┄\n` : '';
+    return { text: head + p.body + pageFooter(p, text.length, ` · search: find="…" · region: ref="eN"${args.interactive ? '' : ' · inputs/buttons only: interactive=true'}`) };
   }));
 
   server.registerTool('browser_text', {
-    title: '본문 읽기',
-    description: '페이지 본문 글자를 읽는다 (main/article이 있으면 그 부분). ref를 주면 그 요소의 글자만. 기사·문서 내용을 읽을 때 스냅샷보다 짧고 읽기 쉽다. 긴 글은 page로 이어 본다.',
-    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, ref: z.string().optional().describe('이 요소의 글자만'), page: pageArg },
+    title: 'Read text',
+    description: 'Reads the page body text (main/article if present). With ref, only that element\'s text. Shorter and easier than a snapshot for articles/documents. Use page for long text.',
+    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, ref: z.string().optional().describe('Only this element\'s text'), page: pageArg },
   }, async (args) => onTab(args, 'view', null, async (s, _tab, agent) => ({ text: await act.extractText(s, agent, args.ref, args.page ?? 1) })));
 
   server.registerTool('browser_screenshot', {
-    title: '화면 캡처',
-    description: '탭의 보이는 화면을 PNG로 캡처한다. 뒤에 있는 탭도 탭을 바꾸지 않고 캡처한다. 창 크기나 뷰포트는 절대 바꾸지 않으므로 페이지 전체 캡처는 지원하지 않는다 (아래쪽은 스크롤 후 캡처, 또는 스냅샷·본문 읽기).',
+    title: 'Screenshot',
+    description: 'Captures the visible area of the tab as PNG, even background tabs (without switching). Never changes window size or viewport, so full-page capture is unsupported (scroll then capture, or use snapshot/text).',
     inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg },
   }, async (args) => onTab(args, 'view', null, async (s) => {
     const data = await act.screenshot(s, await browserConnection(s.slot));
-    return { text: '캡처했어요.', image: data };
+    return { text: 'Captured.', image: data };
   }, { render: true }));
 
   // ---------- 조작 ----------
   server.registerTool('browser_navigate', {
-    title: '주소 이동',
-    description: '탭을 주소로 이동하고 본문이 뜰 때까지 기다린다.',
-    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, url: z.string().describe('이동할 주소'), read: readArg, summary: summaryArg },
-  }, async (args) => onTab(args, 'action', '이동', async (s) => ({ text: (await act.navigate(s, args.url)) + act.downloadNote(s) })));
+    title: 'Navigate',
+    description: 'Navigates the tab to a URL and waits for the body to load.',
+    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, url: z.string().describe('URL to go to'), read: readArg, summary: summaryArg },
+  }, async (args) => onTab(args, 'action', 'navigate', async (s) => ({ text: (await act.navigate(s, args.url)) + act.downloadNote(s) })));
 
   server.registerTool('browser_back', {
-    title: '뒤로',
-    description: '뒤로 가기.',
+    title: 'Back',
+    description: 'Go back.',
     inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, read: readArg, summary: summaryArg },
-  }, async (args) => onTab(args, 'action', '뒤로', async (s) => ({ text: await act.back(s) })));
+  }, async (args) => onTab(args, 'action', 'back', async (s) => ({ text: await act.back(s) })));
 
   server.registerTool('browser_forward', {
-    title: '앞으로',
-    description: '앞으로 가기 (뒤로 간 뒤 다시 앞 페이지로).',
+    title: 'Forward',
+    description: 'Go forward (after going back).',
     inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, read: readArg, summary: summaryArg },
-  }, async (args) => onTab(args, 'action', '앞으로', async (s) => ({ text: await act.forward(s) })));
+  }, async (args) => onTab(args, 'action', 'forward', async (s) => ({ text: await act.forward(s) })));
 
   server.registerTool('browser_reload', {
-    title: '새로고침',
-    description: '지금 페이지를 새로고침한다 (Chrome의 새로고침 그대로). ignore_cache=true면 캐시를 무시하고 새로 받는다. 사용자가 입력 중인 페이지에서는 입력 내용이 사라지니 주의.',
-    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, ignore_cache: z.boolean().optional().describe('캐시 무시 (강력 새로고침)'), read: readArg, summary: summaryArg },
-  }, async (args) => onTab(args, 'action', '새로고침', async (s) => ({ text: await act.reload(s, args.ignore_cache ?? false) })));
+    title: 'Reload',
+    description: 'Reloads the page (same as Chrome reload). ignore_cache=true bypasses the cache. Careful: unsaved user input on the page is lost.',
+    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, ignore_cache: z.boolean().optional().describe('Bypass cache (hard reload)'), read: readArg, summary: summaryArg },
+  }, async (args) => onTab(args, 'action', 'reload', async (s) => ({ text: await act.reload(s, args.ignore_cache ?? false) })));
 
   server.registerTool('browser_dialog', {
-    title: '알림창 처리',
-    description: '탭에 떠 있는 알림창(alert/confirm/prompt/beforeunload)을 확인(accept: true)하거나 취소(accept: false)한다. 알림창이 떠 있는 동안 그 탭은 멈춰 있다. ' +
-      '웬만하면 내용을 보고 직접 판단해서 처리한다 (사용자가 시킨 일의 흐름이면 확인, 필요 없는 안내·광고성 창은 닫기). 사용자가 시키지 않은 되돌릴 수 없는 일(결제·삭제 등)을 확정하는 창일 때만 사용자에게 묻는다. ' +
-      'beforeunload는 확인 = 페이지 떠나기(입력 내용 사라짐), 취소 = 머물기. prompt는 text에 입력할 글자.',
-    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, accept: z.boolean().describe('true = 확인(OK), false = 취소'), text: z.string().optional().describe('prompt 알림창에 입력할 글자 (확인할 때만 쓰임)'), read: readArg, summary: summaryArg },
-  }, async (args) => onTab(args, 'action', '알림창 처리', async (s) => ({ text: await act.handleDialog(s, args.accept, args.text) }), { render: false }));
+    title: 'Handle dialog',
+    description: 'Accepts (accept: true) or dismisses (accept: false) an open dialog (alert/confirm/prompt/beforeunload). The tab is frozen while a dialog is open. ' +
+      'Usually judge from its content and handle it yourself (accept if it is part of the requested task; close unneeded notices/ads). Ask the user only when it confirms an irreversible action they didn\'t request (payment, deletion, etc.). ' +
+      'beforeunload: accept = leave page (input lost), dismiss = stay. For prompt, text is the input.',
+    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, accept: z.boolean().describe('true = OK, false = cancel'), text: z.string().optional().describe('Text for a prompt dialog (used only when accepting)'), read: readArg, summary: summaryArg },
+  }, async (args) => onTab(args, 'action', 'dialog', async (s) => ({ text: await act.handleDialog(s, args.accept, args.text) }), { render: false }));
 
   server.registerTool('browser_hover', {
-    title: '마우스 올리기',
-    description: 'ref 요소 위에 진짜 마우스를 올린다 (클릭하지 않음). 마우스를 올려야 펼쳐지는 메뉴·툴팁에 쓴다. read=changes로 펼쳐진 메뉴를 바로 본다.',
-    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, ref: z.string().describe('마우스를 올릴 요소의 ref'), read: readArg, summary: summaryArg },
-  }, async (args) => onTab(args, 'action', '마우스 올리기', async (s, _tab, agent) => ({ text: await act.hover(s, agent, args.ref) })));
+    title: 'Hover',
+    description: 'Moves the real mouse over a ref element (no click). For hover menus and tooltips. Use read=changes to see the opened menu.',
+    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, ref: z.string().describe('ref of the element to hover'), read: readArg, summary: summaryArg },
+  }, async (args) => onTab(args, 'action', 'hover', async (s, _tab, agent) => ({ text: await act.hover(s, agent, args.ref) })));
 
   server.registerTool('browser_drag', {
-    title: '끌어 놓기',
-    description: '진짜 마우스로 끌어 놓는다 (누르고 → 조금씩 움직이고 → 놓기): 드래그 앤 드롭, 슬라이더, 순서 바꾸기, 드래그형 보안문자 등. ' +
-      '놓을 곳은 to(요소 ref), to_text(놓을 곳의 글자), 또는 from 기준 dx·dy(픽셀). HTML 드래그도 OS 드래그를 띄우지 않고 처리한다.',
+    title: 'Drag',
+    description: 'Drags with the real mouse (press → move in steps → release): drag and drop, sliders, reordering, drag CAPTCHAs, etc. ' +
+      'Target: to (element ref), to_text (text at the drop spot), or dx/dy (pixels from from). HTML drag is handled without starting an OS drag.',
     inputSchema: {
       slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg,
-      from: z.string().describe('끌 요소의 ref (draggable로 표시된 요소 포함)'), to: z.string().optional().describe('놓을 요소의 ref'),
-      to_text: z.string().optional().describe('놓을 곳에 적힌 글자 (놓을 곳에 ref가 없을 때, 예: "여기에 놓으세요")'),
-      dx: z.number().optional().describe('가로로 움직일 픽셀 (오른쪽 +)'), dy: z.number().optional().describe('세로로 움직일 픽셀 (아래 +)'),
+      from: z.string().describe('ref of the element to drag (including ones marked draggable)'), to: z.string().optional().describe('ref of the drop target'),
+      to_text: z.string().optional().describe('Text shown at the drop spot (when it has no ref, e.g. "Drop here")'),
+      dx: z.number().optional().describe('Horizontal pixels (right +)'), dy: z.number().optional().describe('Vertical pixels (down +)'),
       read: readArg, summary: summaryArg,
     },
-  }, async (args) => onTab(args, 'action', '끌어 놓기', async (s, _tab, agent) => ({ text: await act.drag(s, agent, args.from, args.to, args.dx, args.dy, args.to_text) })));
+  }, async (args) => onTab(args, 'action', 'drag', async (s, _tab, agent) => ({ text: await act.drag(s, agent, args.from, args.to, args.dx, args.dy, args.to_text) })));
 
   server.registerTool('browser_download_wait', {
-    title: '다운로드 기다리기',
-    description: '가장 최근에 시작된 다운로드가 끝날 때까지 기다리고, 저장된 파일 경로를 돌려준다 (사용자 Chrome의 다운로드 폴더 설정 그대로). 다운로드 버튼을 누른 뒤 부른다. 끝나는 즉시 돌아온다.',
-    inputSchema: { slot: slotArg, agent: agentArg, timeout: z.number().min(1).max(600).optional().describe('최대 기다릴 시간(초, 기본 120)') },
+    title: 'Wait for download',
+    description: 'Waits for the most recently started download to finish and returns the saved file path (user\'s Chrome download folder). Call after clicking the download button. Returns as soon as it finishes.',
+    inputSchema: { slot: slotArg, agent: agentArg, timeout: z.number().min(1).max(600).optional().describe('Max wait in seconds (default 120)') },
   }, async ({ slot, agent, timeout }) => guard(async () => {
     const me = agent ?? DEFAULT_AGENT;
     await attachSlot(slot);
-    const stop = () => (hasUnread(slot, me) ? '새 메시지가 와서 기다리기를 바로 멈췄어요 (slot_inbox로 확인하세요).' : undefined);
+    const stop = () => (hasUnread(slot, me) ? 'Stopped waiting: a new message arrived (check with slot_inbox).' : undefined);
     try {
       return textResult(await waitDownload(slot, timeout ?? 120, stop));
     } catch (e) {
@@ -612,131 +611,131 @@ export function registerTools(server: McpServer) {
   }));
 
   server.registerTool('browser_pdf', {
-    title: 'PDF로 저장',
-    description: '지금 페이지를 PDF 파일로 저장한다 (영수증·기사 보관 등). path를 안 주면 사용자 다운로드 폴더에 페이지 제목으로 저장한다. 화면·창은 바뀌지 않는다.',
-    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, path: z.string().optional().describe('저장할 파일 경로 (예: C:\Users\me\Desktop\영수증.pdf)') },
+    title: 'Save as PDF',
+    description: 'Saves the page as a PDF (receipts, articles, etc.). Without path, saves to the user\'s Downloads folder named after the page title. Doesn\'t change the screen or window.',
+    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, path: z.string().optional().describe('File path to save (e.g. C:\\Users\\me\\Desktop\\receipt.pdf)') },
   }, async (args) => onTab(args, 'view', null, async (s, tab) => ({ text: await act.pdf(s, args.path, tab.title) })));
 
   server.registerTool('browser_click', {
-    title: '클릭',
-    description: 'ref 요소를 진짜 마우스 이벤트로 클릭한다. 다른 요소가 가리고 있으면 클릭하지 않고 알려준다. 클릭으로 페이지가 이동하면 로딩까지 기다리고, 새 탭이 열리면 알려준다. ' +
-      '파일 칸이나 "첨부" 버튼을 누르면 OS 파일 선택 창을 띄우지 않고 가로채 두므로, 이어서 browser_upload로 파일을 넣는다. <select> 드롭다운은 사용자 화면에 목록 창이 떠서 클릭하지 않는다 (browser_select).',
-    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, ref: z.string().describe('browser_snapshot의 ref (예: "e12")'), double: z.boolean().optional().describe('더블클릭'), read: readArg, summary: summaryArg },
-  }, async (args) => onTab(args, 'action', '클릭', async (s, _tab, agent) => ({ text: await act.click(s, agent, args.ref, args.double ?? false) })));
+    title: 'Click',
+    description: 'Clicks a ref element with real mouse events. If another element covers it, doesn\'t click and reports it. Waits for loading if the click navigates; reports new tabs. ' +
+      'Clicking a file input or "attach" button intercepts the OS file picker (not shown); then use browser_upload. Doesn\'t click <select> dropdowns (they open a list popup on the user\'s screen); use browser_select.',
+    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, ref: z.string().describe('ref from browser_snapshot (e.g. "e12")'), double: z.boolean().optional().describe('Double-click'), read: readArg, summary: summaryArg },
+  }, async (args) => onTab(args, 'action', 'click', async (s, _tab, agent) => ({ text: await act.click(s, agent, args.ref, args.double ?? false) })));
 
   server.registerTool('browser_type', {
-    title: '입력',
-    description: 'ref 요소에 글자를 입력한다. 사람이 치는 것처럼 글자마다 진짜 키 이벤트(keydown·keypress·input·keyup)를 보낸다. ' +
-      'clear=true면 기존 내용을 지우고, submit=true면 입력 뒤 Enter를 누른다. 입력 후 실제 값을 확인해서 다르면 알려준다. ' +
-      'fast=true는 아주 긴 글을 키 이벤트 없이 한 번에 넣는다. 날짜·시간 입력칸은 형식에 맞춰 값을 직접 넣는다 (time "19:30", date "2026-10-08"; 이때 change 이벤트는 isTrusted=false).',
+    title: 'Type',
+    description: 'Types text into a ref element, sending real key events (keydown/keypress/input/keyup) per character like a human. ' +
+      'clear=true clears existing content; submit=true presses Enter after. Verifies the resulting value and reports a mismatch. ' +
+      'fast=true inserts very long text at once without key events. Date/time inputs get the value set directly in their format (time "19:30", date "2026-10-08"; change event then has isTrusted=false).',
     inputSchema: {
-      slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, ref: z.string().describe('입력할 요소의 ref'), text: z.string().describe('입력할 글자'),
-      clear: z.boolean().optional().describe('기존 내용 지우기'), submit: z.boolean().optional().describe('입력 후 Enter'),
-      fast: z.boolean().optional().describe('아주 긴 글: 키 이벤트 없이 한 번에 넣기'), read: readArg, summary: summaryArg,
+      slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, ref: z.string().describe('ref of the element to type into'), text: z.string().describe('Text to type'),
+      clear: z.boolean().optional().describe('Clear existing content'), submit: z.boolean().optional().describe('Press Enter after'),
+      fast: z.boolean().optional().describe('Very long text: insert at once without key events'), read: readArg, summary: summaryArg,
     },
-  }, async (args) => onTab(args, 'action', '입력', async (s, _tab, agent) => ({ text: await act.type(s, agent, args.ref, args.text, args.clear ?? false, args.submit ?? false, args.fast ?? false) })));
+  }, async (args) => onTab(args, 'action', 'type', async (s, _tab, agent) => ({ text: await act.type(s, agent, args.ref, args.text, args.clear ?? false, args.submit ?? false, args.fast ?? false) })));
 
   server.registerTool('browser_fill', {
-    title: '폼 채우기',
-    description: '같은 페이지의 입력칸 여러 개를 차례로 채운다 (칸마다 기존 내용을 지우고 진짜 키 이벤트로 입력, 값 확인). ' +
-      '채우는 도중 페이지가 바뀌거나 알림창이 뜨거나 한 칸이라도 실패하면 그 자리에서 멈추고 어디까지 했는지 알려준다. ' +
-      'submit="Enter"면 마지막 칸에서 Enter, 버튼 ref면 그 버튼을 클릭한다. 드롭다운은 browser_select를 쓴다.',
+    title: 'Fill form',
+    description: 'Fills several inputs on the same page in order (each cleared, typed with real key events, value verified). ' +
+      'Stops on page change, dialog, or any failed field, and reports how far it got. ' +
+      'submit="Enter" presses Enter in the last field; a button ref clicks that button. For dropdowns use browser_select.',
     inputSchema: {
       slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg,
-      fields: z.array(z.object({ ref: z.string().describe('입력칸 ref'), text: z.string().describe('넣을 글자') })).min(1).max(30).describe('채울 칸들 (위에서부터 차례로)'),
-      submit: z.string().optional().describe('다 채운 뒤: "Enter" 또는 누를 버튼의 ref'),
+      fields: z.array(z.object({ ref: z.string().describe('Input ref'), text: z.string().describe('Text to enter') })).min(1).max(30).describe('Fields to fill (top to bottom)'),
+      submit: z.string().optional().describe('After filling: "Enter" or a button ref to click'),
       read: readArg, summary: summaryArg,
     },
-  }, async (args) => onTab(args, 'action', '폼 채우기', async (s, _tab, agent) => {
+  }, async (args) => onTab(args, 'action', 'fill', async (s, _tab, agent) => {
     const href = async () => (await s.evaluate<string>('location.href', { timeoutMs: 3000 }).catch(() => undefined))?.value;
     const start = await href();
     const done: string[] = [];
     const stop = (why: string) => ({ text: [...done, why].join('\n') });
     for (const [i, f] of args.fields.entries()) {
-      if (s.dialog) return stop(`${i + 1}번째 칸 전에 알림창이 떠서 멈췄어요.`);
-      if (pausedInfo(args.slot)) return stop(`${i + 1}번째 칸 전에 사용자가 슬롯을 멈춰서 멈췄어요.\n${pausedRefusal(args.slot)}`);
-      if (i > 0 && (await href()) !== start) return stop(`페이지가 바뀌어서 ${i + 1}번째 칸 [${f.ref}]부터는 채우지 않았어요.`);
+      if (s.dialog) return stop(`Stopped before field ${i + 1}: a dialog appeared.`);
+      if (pausedInfo(args.slot)) return stop(`Stopped before field ${i + 1}: the user paused the slot.\n${pausedRefusal(args.slot)}`);
+      if (i > 0 && (await href()) !== start) return stop(`Page changed; field ${i + 1} [${f.ref}] and after were not filled.`);
       try {
         const r = await act.type(s, agent, f.ref, f.text, true, false);
         done.push(`${i + 1}. ${r}`);
-        if (r.includes(act.VALUE_MISMATCH)) return stop(`${i + 1}번째 칸 [${f.ref}]의 값이 넣으려던 글자와 달라서 멈췄어요 (제출하지 않았어요). 값을 확인한 뒤 다시 하세요.`);
+        if (r.includes(act.VALUE_MISMATCH)) return stop(`Stopped: field ${i + 1} [${f.ref}] value differs from the intended text (not submitted). Check the value and retry.`);
       } catch (e) {
         if (e instanceof act.DialogInterrupt) throw e;
-        return stop(`${i + 1}번째 칸 [${f.ref}]에서 멈췄어요: ${(e as Error).message}`);
+        return stop(`Stopped at field ${i + 1} [${f.ref}]: ${(e as Error).message}`);
       }
     }
     if (args.submit) {
-      if (s.dialog) return stop('제출 전에 알림창이 떠서 멈췄어요.');
-      done.push(`제출: ${args.submit.toLowerCase() === 'enter' ? await act.pressKey(s, 'Enter') : await act.click(s, agent, args.submit, false)}`);
+      if (s.dialog) return stop('Stopped before submit: a dialog appeared.');
+      done.push(`Submit: ${args.submit.toLowerCase() === 'enter' ? await act.pressKey(s, 'Enter') : await act.click(s, agent, args.submit, false)}`);
     }
     return { text: done.join('\n') };
   }));
 
   server.registerTool('browser_upload', {
-    title: '파일 올리기',
-    description: '파일 칸에 파일을 넣는다 (사용자 화면에 OS 파일 선택 창을 띄우지 않음). ref로 파일 칸(<input type=file> 또는 그 label)을 주거나, ' +
-      '사이트가 만든 "첨부" 버튼은 먼저 browser_click으로 누른 뒤(열리려던 파일 선택 창을 CDPM이 가로채 둠) ref 없이 부른다. 사이트는 사람이 파일을 고른 것과 같은 이벤트를 받는다.',
+    title: 'Upload file',
+    description: 'Puts files into a file input (no OS file picker shown to the user). Give ref of the file input (<input type=file> or its label), or ' +
+      'for a site\'s custom "attach" button, click it first with browser_click (CDPM intercepts the picker) and call without ref. The site gets the same events as a human file pick.',
     inputSchema: {
       slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg,
-      files: z.array(z.string()).min(1).describe('올릴 파일의 경로 (이 PC 기준, 절대 경로 권장)'),
-      ref: z.string().optional().describe('파일 칸의 ref. 생략하면 방금 클릭으로 열리려던 파일 선택 창에 넣는다'),
+      files: z.array(z.string()).min(1).describe('File paths on this PC (absolute recommended)'),
+      ref: z.string().optional().describe('File input ref. Omit to use the file picker just opened by a click'),
       read: readArg, summary: summaryArg,
     },
-  }, async (args) => onTab(args, 'action', '파일 올리기', async (s, _tab, agent) => ({ text: await act.upload(s, agent, args.ref, args.files) })));
+  }, async (args) => onTab(args, 'action', 'upload', async (s, _tab, agent) => ({ text: await act.upload(s, agent, args.ref, args.files) })));
 
   server.registerTool('browser_select', {
-    title: '드롭다운 선택',
-    description: '<select> 드롭다운에서 항목을 고른다 (값 또는 보이는 글자, 일부만 맞아도 됨). 드롭다운에 포커스를 두고 키로 옮기므로(Windows·Linux는 화살표 키, macOS는 항목 앞글자 입력) 페이지는 진짜 이벤트를 받고, 목록 창은 뜨지 않는다. 맞는 항목이 없으면 고를 수 있는 항목을 알려준다.',
-    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, ref: z.string().describe('드롭다운(combobox)의 ref'), option: z.string().describe('고를 항목의 값 또는 글자'), read: readArg, summary: summaryArg },
-  }, async (args) => onTab(args, 'action', '선택', async (s, _tab, agent) => ({ text: await act.select(s, agent, args.ref, args.option) })));
+    title: 'Select option',
+    description: 'Picks an option in a <select> dropdown (by value or visible text; partial match OK). Focuses the dropdown and moves with keys (arrow keys on Windows/Linux, typing the first letters on macOS), so the page gets real events and no list popup opens. If nothing matches, lists the available options.',
+    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, ref: z.string().describe('ref of the dropdown (combobox)'), option: z.string().describe('Option value or text'), read: readArg, summary: summaryArg },
+  }, async (args) => onTab(args, 'action', 'select', async (s, _tab, agent) => ({ text: await act.select(s, agent, args.ref, args.option) })));
 
   server.registerTool('browser_press_key', {
-    title: '키 입력',
+    title: 'Press key',
     description: process.platform === 'darwin'
-      ? '포커스된 곳에 키를 누른다. 예: Enter, Tab, Escape, ArrowDown, PageDown, Meta+A(전체 선택), Shift+Tab. 이 PC는 macOS라 단축키는 Meta(Cmd)를 쓴다 (Control+A는 줄 맨 앞으로 이동).'
-      : '포커스된 곳에 키를 누른다. 예: Enter, Tab, Escape, ArrowDown, PageDown, Control+A, Shift+Tab.',
-    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, key: z.string().describe(process.platform === 'darwin' ? '키 이름 또는 조합 (예: "Meta+A")' : '키 이름 또는 조합 (예: "Control+A")'), read: readArg, summary: summaryArg },
-  }, async (args) => onTab(args, 'action', '키 입력', async (s) => ({ text: await act.pressKey(s, args.key) })));
+      ? 'Presses a key on the focused element. E.g. Enter, Tab, Escape, ArrowDown, PageDown, Meta+A (select all), Shift+Tab. This PC is macOS, so shortcuts use Meta (Cmd) (Control+A moves to line start).'
+      : 'Presses a key on the focused element. E.g. Enter, Tab, Escape, ArrowDown, PageDown, Control+A, Shift+Tab.',
+    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, key: z.string().describe(process.platform === 'darwin' ? 'Key name or combo (e.g. "Meta+A")' : 'Key name or combo (e.g. "Control+A")'), read: readArg, summary: summaryArg },
+  }, async (args) => onTab(args, 'action', 'key', async (s) => ({ text: await act.pressKey(s, args.key) })));
 
   server.registerTool('browser_scroll', {
-    title: '스크롤',
-    description: 'ref 요소가 보이도록 스크롤하거나, dy 픽셀만큼 스크롤한다 (양수=아래, 음수=위, 기본 600). 실제로 움직인 위치를 알려준다.',
+    title: 'Scroll',
+    description: 'Scrolls a ref element into view, or by dy pixels (positive = down, negative = up, default 600). Reports the actual resulting position.',
     inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, ref: z.string().optional(), dy: z.number().optional(), read: readArg, summary: summaryArg },
-  }, async (args) => onTab(args, 'action', '스크롤', async (s, _tab, agent) => ({ text: await act.scroll(s, agent, args.ref, args.dy) })));
+  }, async (args) => onTab(args, 'action', 'scroll', async (s, _tab, agent) => ({ text: await act.scroll(s, agent, args.ref, args.dy) })));
 
   server.registerTool('browser_wait', {
-    title: '기다리기',
-    description: 'text가 페이지에 나타날 때까지, gone이면 그 글자가 사라질 때까지, url이면 주소가 바뀔 때까지, enabled면 그 버튼·입력칸이 눌릴 수 있게 될 때까지, ' +
-      'response면 그 주소의 네트워크 응답이 다 올 때까지 기다리고 응답 본문을 돌려준다, network_idle이면 네트워크가 잠잠해질 때까지, 아니면 seconds초 동안. ' +
-      'SPA(검색 결과·목록 등)는 화면을 읽는 대신 클릭 뒤 response="/api/search"처럼 데이터 응답(JSON)을 바로 받는 게 빠르고 정확하다 (이 에이전트가 그 탭에서 마지막으로 조작한 뒤의 요청부터 찾으므로 클릭하는 동안 이미 온 응답도 잡는다). ' +
-      '화면은 건드리지 않고 읽기만 해서, 사용자가 입력 중인 내용이 사라지지 않는다 (로그인 완료 감지에 쓴다: url 또는 gone="비밀번호" 또는 text="받은편지함"). ' +
-      '조건이 맞거나 다른 에이전트의 메시지가 오는 즉시 돌아온다. 기다림은 최소로: 사람(로그인 등)을 기다릴 때만 길게 쓰고, 다른 에이전트를 기다릴 때는 slot_inbox wait를 쓴다.',
+    title: 'Wait',
+    description: 'Waits until text appears; gone: that text disappears; url: the URL changes; enabled: that button/input becomes enabled; ' +
+      'response: a network response for that URL completes (returns its body); network_idle: the network goes quiet; otherwise for seconds. ' +
+      'For SPAs (search results, lists, etc.), instead of reading the page, getting the data response (JSON) with response="/api/search" after a click is faster and more accurate (it searches from this agent\'s last action on that tab, so responses that arrived during the click are caught). ' +
+      'Only reads, never touches the page, so the user\'s input is not lost (use it to detect login: url, gone="Password" or text="Inbox"). ' +
+      'Returns as soon as the condition is met or another agent\'s message arrives. Keep waits minimal: long waits only for humans (login, etc.); to wait for other agents use slot_inbox wait.',
     inputSchema: {
       slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg,
-      text: z.string().optional().describe('나타나길 기다릴 글자'),
-      url: z.string().optional().describe('이 글자가 들어간 주소가 될 때까지 (예: "mail.google.com/mail"). 빈 글자 ""면 지금 주소에서 달라질 때까지'),
-      gone: z.string().optional().describe('이 글자가 페이지에서 사라질 때까지 (예: 로그인 폼의 "비밀번호"가 사라짐 = 로그인 완료)'),
-      seconds: z.number().min(0).max(60).optional().describe('그냥 기다릴 시간(초). 가급적 쓰지 않는다: 기다릴 일은 text·gone·url이나 slot_inbox wait로 조건을 걸어 기다린다'),
-      timeout: z.number().min(1).max(600).optional().describe('text·gone·url·enabled·response·network_idle 대기 최대 시간(초). 사람의 로그인 등을 기다릴 때는 300~600'),
-      network_idle: z.boolean().optional().describe('진행 중인 네트워크 요청이 0.5초 동안 없을 때까지 (캡처·읽기 전에)'),
-      enabled: z.string().optional().describe('이 ref 요소(버튼·입력칸)가 눌릴 수 있게 될 때까지 (disabled가 풀릴 때까지)'),
-      response: z.string().optional().describe('주소에 이 글자가 들어간 네트워크 응답이 다 올 때까지 (예: "/api/search"). * ? 와일드카드도 됨 (주소 전체 기준, 예: "*api.example.com/v1/items*"). 응답 본문을 함께 돌려준다'),
+      text: z.string().optional().describe('Text to wait for'),
+      url: z.string().optional().describe('Until the URL contains this (e.g. "mail.google.com/mail"). "" = until it differs from the current URL'),
+      gone: z.string().optional().describe('Until this text disappears from the page (e.g. login form\'s "Password" gone = logged in)'),
+      seconds: z.number().min(0).max(60).optional().describe('Plain wait in seconds. Avoid: wait on a condition (text/gone/url) or slot_inbox wait instead'),
+      timeout: z.number().min(1).max(600).optional().describe('Max wait in seconds for text/gone/url/enabled/response/network_idle. 300-600 when waiting for a human login, etc.'),
+      network_idle: z.boolean().optional().describe('Until no network requests for 0.5s (before capture/read)'),
+      enabled: z.string().optional().describe('Until this ref element (button/input) becomes enabled'),
+      response: z.string().optional().describe('Until a network response whose URL contains this completes (e.g. "/api/search"). * ? wildcards work (matched against the full URL, e.g. "*api.example.com/v1/items*"). Returns the response body'),
     },
   }, async (args) => onTab(args, 'view', null, async (s, _tab, agent) => {
     // 다른 에이전트가 메시지를 보내면 기다리기를 바로 멈춘다 (메시지는 결과 머리말로 전달됨)
     const stop: act.StopCheck = () => {
       if (pausedInfo(args.slot)) return pausedRefusal(args.slot);
-      return hasUnread(args.slot, agent) ? '새 메시지가 와서 기다리기를 바로 멈췄어요 (위 머리말의 메시지를 보고 이어서 하세요).' : undefined;
+      return hasUnread(args.slot, agent) ? 'Stopped waiting: a new message arrived (see it in the header above and continue).' : undefined;
     };
     if (args.response !== undefined) {
-      if (!args.response.trim()) throw new CdpmError('response에 기다릴 주소 일부를 넣으세요 (예: "/api/search").');
+      if (!args.response.trim()) throw new CdpmError('Put part of the URL to wait for in response (e.g. "/api/search").');
       // 이 에이전트가 이 탭에서 마지막으로 조작한 뒤(2분 안)의 요청부터. 조작 기록이 없으면 지금부터.
       const last = s.actionStartedAt.get(agent);
       const since = last && Date.now() - last < 120_000 ? last : Date.now();
       try {
         const e = await act.waitForResponse(s, args.response, since, args.timeout ?? 30, stop);
-        if (e.failed) return { text: `응답이 실패했어요: ${netLine(e)}` };
-        return { text: `응답이 왔어요: ${netLine(e)}\n주소: ${decodeUrl(e.url).slice(0, 300)}\n\n[응답 본문]\n${await responseBody(s, e)}` };
+        if (e.failed) return { text: `Response failed: ${netLine(e)}` };
+        return { text: `Response received: ${netLine(e)}\nURL: ${decodeUrl(e.url).slice(0, 300)}\n\n[Response body]\n${await responseBody(s, e)}` };
       } catch (err) {
         if (err instanceof act.WaitStopped) return { text: err.message };
         throw err;
@@ -754,26 +753,26 @@ export function registerTools(server: McpServer) {
       if (why) return { text: why };
       await sleep(Math.min(100, until - Date.now()));
     }
-    return { text: `${sec}초 기다렸어요.` };
+    return { text: `Waited ${sec}s.` };
   }));
 
   server.registerTool('browser_eval', {
-    title: 'JS 실행',
-    description: '탭에서 JavaScript 식을 실행하고 결과를 JSON으로 돌려준다. 다른 도구로 안 될 때만 쓰는 탈출구. ' +
-      '페이지와 분리된 실행 공간(isolated world)에서 돌아서 DOM은 읽고 바꿀 수 있지만, 페이지 스크립트가 만든 전역 변수(window.앱변수 등)는 보이지 않는다.',
-    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, expression: z.string().describe('실행할 JS 식 (Promise면 기다림)'), summary: summaryArg },
-  }, async (args) => onTab(args, 'action', 'JS 실행', async (s) => ({ text: await act.evaluate(s, args.expression) })));
+    title: 'Run JS',
+    description: 'Evaluates a JavaScript expression in the tab and returns the result as JSON. Escape hatch only when other tools can\'t do it. ' +
+      'Runs in an isolated world: DOM can be read and modified, but globals created by page scripts (window.appVar, etc.) are not visible.',
+    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, expression: z.string().describe('JS expression (Promises are awaited)'), summary: summaryArg },
+  }, async (args) => onTab(args, 'action', 'eval JS', async (s) => ({ text: await act.evaluate(s, args.expression) })));
 
   // ---------- 네트워크 ----------
   server.registerTool('browser_network', {
-    title: '네트워크 요청 보기',
-    description: '탭의 네트워크 요청 목록 (최근 것이 아래). CDPM이 그 탭에 처음 붙은 때부터 최근 500개를 기록한다. filter(주소 일부), type(Document, XHR, Fetch, Script, Image 등), failed(실패만)로 거른다. 자세히 보려면 browser_network_detail에 n번호.',
+    title: 'Network requests',
+    description: 'Tab network request list (newest at bottom). Records the latest 500 since CDPM first attached to the tab. Filter with filter (URL part), type (Document, XHR, Fetch, Script, Image, etc.), failed (failures only). For details pass the n-number to browser_network_detail.',
     inputSchema: {
       slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg,
-      filter: z.string().optional().describe('주소에 이 글자가 들어간 요청만'),
-      type: z.string().optional().describe('요청 종류 (예: XHR, Fetch, Document, Script, Image)'),
-      failed: z.boolean().optional().describe('실패한 요청만'),
-      limit: z.number().int().min(1).max(200).optional().describe('최대 개수 (기본 40, 최근 것부터)'),
+      filter: z.string().optional().describe('Only requests whose URL contains this'),
+      type: z.string().optional().describe('Request type (e.g. XHR, Fetch, Document, Script, Image)'),
+      failed: z.boolean().optional().describe('Failed requests only'),
+      limit: z.number().int().min(1).max(200).optional().describe('Max count (default 40, newest first)'),
     },
   }, async (args) => onTab(args, 'view', null, async (s) => {
     let list = s.network.list();
@@ -783,41 +782,41 @@ export function registerTools(server: McpServer) {
     if (args.failed) list = list.filter((e) => e.failed);
     const limit = args.limit ?? 40;
     const shown = list.slice(-limit);
-    const since = new Date(s.network.startedAt).toLocaleTimeString('ko-KR', { hour12: false });
-    const head = `기록 시작: ${since} (CDPM이 이 탭에 처음 붙은 때부터) · 기록 ${total}개 중 조건에 맞는 ${list.length}개${list.length > limit ? `, 최근 ${limit}개 표시` : ''}`;
-    return { text: `${head}\n${shown.length ? shown.map((e) => netLine(e, s.network.rules)).join('\n') : '(해당하는 요청이 없어요)'}` };
+    const since = new Date(s.network.startedAt).toLocaleTimeString('en-GB', { hour12: false });
+    const head = `Recording since ${since} (when CDPM first attached to this tab) · ${list.length} of ${total} recorded match${list.length > limit ? `, newest ${limit} shown` : ''}`;
+    return { text: `${head}\n${shown.length ? shown.map((e) => netLine(e, s.network.rules)).join('\n') : '(no matching requests)'}` };
   }));
 
   server.registerTool('browser_network_detail', {
-    title: '네트워크 요청 자세히',
-    description: '요청 하나의 헤더, 보낸 데이터, 응답 본문(글자면 앞부분)을 보여준다. id는 browser_network의 n번호.',
-    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, id: z.string().describe('요청 번호 (예: "n12")'), body: z.boolean().optional().describe('응답 본문 포함 (기본 true)') },
+    title: 'Network request detail',
+    description: 'Shows one request\'s headers, sent data and response body (start of it, if text). id is the n-number from browser_network.',
+    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, id: z.string().describe('Request number (e.g. "n12")'), body: z.boolean().optional().describe('Include response body (default true)') },
   }, async (args) => onTab(args, 'view', null, async (s) => {
     const e = s.network.find(args.id);
-    if (!e) throw new CdpmError(`요청 "${args.id}"을(를) 찾을 수 없어요. browser_network로 번호를 확인하세요 (최근 500개만 보관).`);
-    const parts = [netLine(e), '', `주소: ${decodeUrl(e.url)}`, '', '[요청 헤더]', headersText(e.requestHeaders)];
+    if (!e) throw new CdpmError(`Request "${args.id}" not found. Check numbers with browser_network (only the latest 500 are kept).`);
+    const parts = [netLine(e), '', `URL: ${decodeUrl(e.url)}`, '', '[Request headers]', headersText(e.requestHeaders)];
     if (e.hasPostData) {
       const post = await s.send<{ postData: string }>('Network.getRequestPostData', { requestId: e.requestId }, 5000).catch(() => undefined);
-      parts.push('', '[보낸 데이터]', post ? truncate(post.postData, 5000) : '  (가져올 수 없어요)');
+      parts.push('', '[Sent data]', post ? truncate(post.postData, 5000) : '  (unavailable)');
     }
-    parts.push('', '[응답 헤더]', headersText(e.responseHeaders));
-    if (args.body !== false && !e.failed && e.status !== undefined) parts.push('', '[응답 본문]', await responseBody(s, e));
+    parts.push('', '[Response headers]', headersText(e.responseHeaders));
+    if (args.body !== false && !e.failed && e.status !== undefined) parts.push('', '[Response body]', await responseBody(s, e));
     return { text: parts.join('\n') };
   }));
 
   server.registerTool('browser_block', {
-    title: '요청 막기',
-    description: '탭에서 주소 패턴에 맞는 네트워크 요청을 막는다 (실패 처리). add로 추가, remove로 해제, clear로 내가 건 규칙 전부 해제. ' +
-      '패턴: * 아무 글자, ? 한 글자. 도메인만 적으면 그 글자가 들어간 모든 요청 (예: "ads.example.com" → "*ads.example.com*"). 끝에는 자동으로 *가 붙어 쿼리 문자열이 있어도 걸린다 ("*.png" → "*.png*"). 규칙이 있는 동안 그 탭은 캐시를 쓰지 않는다. ' +
-      '규칙은 이 Claude 세션이 살아 있는 동안만 유지되고, 다른 에이전트에게도 머리말로 보인다. 아무 인자 없이 부르면 지금 규칙만 보여준다.',
+    title: 'Block requests',
+    description: 'Blocks tab network requests matching URL patterns (they fail). add adds, remove removes, clear removes all rules you set. ' +
+      'Patterns: * any chars, ? one char. A bare domain matches every request containing it ("ads.example.com" → "*ads.example.com*"). A trailing * is added automatically so query strings still match ("*.png" → "*.png*"). The tab skips the cache while rules exist. ' +
+      'Rules last only while this Claude session is alive and are shown to other agents in the header. With no args, shows current rules.',
     inputSchema: {
       slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg,
-      add: z.array(z.string()).optional().describe('막을 주소 패턴들'),
-      remove: z.array(z.string()).optional().describe('해제할 패턴들'),
-      clear: z.boolean().optional().describe('내가(이 세션이) 건 규칙 전부 해제'),
+      add: z.array(z.string()).optional().describe('URL patterns to block'),
+      remove: z.array(z.string()).optional().describe('Patterns to unblock'),
+      clear: z.boolean().optional().describe('Remove all rules set by this session'),
       summary: summaryArg,
     },
-  }, async (args) => onTab(args, args.add?.length || args.remove?.length || args.clear ? 'action' : 'view', args.add?.length ? '요청 막기' : args.remove?.length || args.clear ? '요청 막기 해제' : null, async (s, tab, agent) => {
+  }, async (args) => onTab(args, args.add?.length || args.remove?.length || args.clear ? 'action' : 'view', args.add?.length ? 'block requests' : args.remove?.length || args.clear ? 'unblock requests' : null, async (s, tab, agent) => {
     let rules: BlockRule[] = [...s.network.rules];
     if (args.clear) rules = [];
     for (const p of args.remove ?? []) {
@@ -841,100 +840,104 @@ export function registerTools(server: McpServer) {
     }
     const others = liveBlocks(tab).filter((b) => b.pid !== process.pid);
     const lines = [
-      changed ? '요청 막기 규칙을 바꿨어요.' : '지금 요청 막기 규칙:',
-      `이 세션의 규칙: ${rules.length ? rules.map((r) => `${r.pattern} (${r.agent})`).join(', ') : '없음'}`,
+      changed ? 'Block rules updated.' : 'Current block rules:',
+      `This session: ${rules.length ? rules.map((r) => `${r.pattern} (${r.agent})`).join(', ') : 'none'}`,
     ];
-    if (others.length) lines.push(`다른 세션의 규칙: ${others.map((b) => `${b.pattern} (${b.agent})`).join(', ')} — 그 세션에서만 해제할 수 있어요`);
-    lines.push('막힌 요청은 browser_network에서 "실패 … (막음: 패턴)"으로 보여요.');
+    if (others.length) lines.push(`Other sessions: ${others.map((b) => `${b.pattern} (${b.agent})`).join(', ')} — only removable from that session`);
+    lines.push('Blocked requests show in browser_network as "failed … (blocked: pattern)".');
     return { text: lines.join('\n') };
   }));
 
   // ---------- 메시지 ----------
-  const slotsArg = z.array(slotArg).optional().describe('여러 슬롯 (예: [1,2,3])');
+  const slotsArg = z.array(slotArg).optional().describe('Multiple slots (e.g. [1,2,3])');
   server.registerTool('slot_pause', {
-    title: '슬롯 멈추기',
-    description: '사용자가 "3번 멈춰"처럼 멈추라고 했을 때만 쓴다 (에이전트가 스스로 쓰지 않는다). 그 슬롯의 조작 도구가 모두 거절되고, 기다리는 중인 browser_wait도 바로 멈춘다. ' +
-      '이미 Chrome에 보낸 조작 하나는 끝까지 간다. 화면 읽기는 그대로 된다. 다른 Claude 세션의 에이전트에게도 바로 적용된다. all=true면 떠 있는 모든 슬롯.',
-    inputSchema: { slot: slotArg.optional(), slots: slotsArg, all: z.boolean().optional().describe('떠 있는 모든 슬롯'), agent: agentArg },
+    title: 'Pause slot',
+    description: 'Use only when the user says to pause (e.g. "pause 3"); agents never call it on their own. All action tools on the slot are refused and any browser_wait in progress stops at once. ' +
+      'An action already sent to Chrome finishes. Reading still works. Applies immediately to agents in other Claude sessions too. all=true pauses every running slot.',
+    inputSchema: { slot: slotArg.optional(), slots: slotsArg, all: z.boolean().optional().describe('All running slots'), agent: agentArg },
   }, async ({ slot, slots, all, agent }) => guard(async () => {
     const me = agent ?? DEFAULT_AGENT;
     const targets = all ? (await liveSlots()).map(([s]) => s) : [...new Set([...(slots ?? []), ...(slot !== undefined ? [slot] : [])])];
-    if (!targets.length) throw new CdpmError('멈출 슬롯을 넣으세요 (slot, slots 또는 all).');
-    return textResult((await pauseSlots(targets, me)).join('\n') + '\n다시 시작하려면 사용자가 말하면 slot_resume, 터미널에서는 cdpm resume <번호>.');
+    if (!targets.length) throw new CdpmError('Specify slots to pause (slot, slots or all).');
+    return textResult((await pauseSlots(targets, me)).join('\n') + '\nTo resume: slot_resume when the user says so, or `cdpm resume <number>` in a terminal.');
   }));
 
   server.registerTool('slot_resume', {
-    title: '슬롯 다시 시작',
-    description: '사용자가 "3번 다시 해"처럼 다시 시작하라고 했을 때만 쓴다 (멈춘 슬롯을 맡은 에이전트가 스스로 쓰지 않는다). 멈춤을 풀고 그 슬롯의 모든 에이전트에게 메시지를 보내 바로 깨운다 (에이전트는 화면을 다시 읽고 이어 감). all=true면 멈춘 모든 슬롯.',
-    inputSchema: { slot: slotArg.optional(), slots: slotsArg, all: z.boolean().optional().describe('멈춘 모든 슬롯'), agent: agentArg },
+    title: 'Resume slot',
+    description: 'Use only when the user says to resume (e.g. "continue 3"); the agent owning a paused slot never calls it on its own. Unpauses and messages every agent on the slot to wake it (agents re-read the page and continue). all=true resumes every paused slot.',
+    inputSchema: { slot: slotArg.optional(), slots: slotsArg, all: z.boolean().optional().describe('All paused slots'), agent: agentArg },
   }, async ({ slot, slots, all, agent }) => guard(async () => {
     const me = agent ?? DEFAULT_AGENT;
     const targets = all ? (await import('../pause.js')).pausedSlots() : [...new Set([...(slots ?? []), ...(slot !== undefined ? [slot] : [])])];
-    if (!targets.length) return textResult(all ? '멈춘 슬롯이 없어요.' : '다시 시작할 슬롯을 넣으세요 (slot, slots 또는 all).', !all);
+    if (!targets.length) return textResult(all ? 'No paused slots.' : 'Specify slots to resume (slot, slots or all).', !all);
     return textResult((await resumeSlots(targets, me)).join('\n'));
   }));
 
   server.registerTool('slot_send', {
-    title: '메시지 보내기',
-    description: '다른 에이전트에게 메시지를 보낸다 (실시간 협업). slot에는 받는 쪽 에이전트가 맡은 슬롯 번호를 넣는다 (다른 슬롯 담당에게도 그 슬롯 번호로 보내면 됨). to를 생략하면 그 슬롯의 모두에게. ' +
-      '상대는 slot_inbox wait로 기다리고 있으면 즉시, 아니면 다음 도구 결과 머리말로 받는다 (browser_wait 중이면 기다리기가 바로 멈춤). 일을 하나 끝내면 기다리는 상대에게 바로 알린다.',
-    inputSchema: { slot: slotArg, agent: agentArg, text: z.string().min(1).max(2000), to: z.string().optional().describe('받을 에이전트 이름') },
+    title: 'Send message',
+    description: 'Sends a message to other agents (real-time collaboration). slot = the slot the recipient owns (to reach another slot\'s agent, use that slot number). Omit to to send to everyone on that slot. ' +
+      'Recipients get it instantly if waiting in slot_inbox wait, otherwise in their next tool result header (a running browser_wait stops at once). When you finish a step, notify waiting agents right away.',
+    inputSchema: { slot: slotArg, agent: agentArg, text: z.string().min(1).max(2000), to: z.string().optional().describe('Recipient agent name') },
   }, async ({ slot, agent, text, to }) => guard(async () => {
     const me = agent ?? DEFAULT_AGENT;
     const msg = await sendMessage(slot, me, text, to ?? null);
-    return textResult(`[${slot}번] 메시지를 보냈어요 (#${msg.seq}${to ? `, 받는 사람: ${to}` : ', 모두에게'}).`);
+    return textResult(`[Slot ${slot}] Message sent (#${msg.seq}${to ? `, to: ${to}` : ', to everyone'}).`);
   }));
 
   server.registerTool('slot_inbox', {
-    title: '메시지 확인',
-    description: '내게 온 안 읽은 메시지를 본다. wait초를 주면 새 메시지가 올 때까지 최대 그만큼 기다린다 (실시간 대화용). ' +
-      '다른 도구의 결과 머리말로 이미 받은 메시지는 "안 읽은 메시지"가 아니므로, 새 메시지가 없을 때는 최근에 받은 메시지를 참고로 함께 보여준다.',
-    inputSchema: { slot: slotArg, agent: agentArg, wait: z.number().min(0).max(600).optional().describe('새 메시지를 기다릴 최대 시간(초). 메시지가 오는 즉시 돌아온다 (다른 에이전트의 일이 끝나길 기다릴 때 화면을 반복해서 보지 말고 이걸 쓴다)') },
+    title: 'Check messages',
+    description: 'Shows your unread messages. With wait (seconds), waits up to that long for a new message (for real-time conversation). ' +
+      'Messages already delivered in another tool\'s header are not unread; when there are no new ones, recently received ones are noted for reference.',
+    inputSchema: { slot: slotArg, agent: agentArg, wait: z.number().min(0).max(600).optional().describe('Max seconds to wait for a new message; returns as soon as one arrives (use this instead of repeatedly checking the page while waiting for another agent)') },
   }, async ({ slot, agent, wait }) => guard(async () => {
     const me = agent ?? DEFAULT_AGENT;
     const msgs = wait ? await waitUnread(slot, me, wait) : await takeUnread(slot, me);
-    if (msgs.length) return textResult(`[${slot}번] 새 메시지 ${msgs.length}개\n${formatMessages(msgs).map((l) => `  ${l}`).join('\n')}`);
+    if (msgs.length) return textResult(`[Slot ${slot}] ${msgs.length} new message(s)\n${formatMessages(msgs).map((l) => `  ${l}`).join('\n')}`);
     const recent = recentDelivered(slot, me);
-    const tail = recent.length ? ` (최근 10분 안에 다른 도구의 머리말로 이미 받은 메시지 ${recent.length}개는 다시 보여주지 않아요)` : '';
-    return textResult(`[${slot}번] 새 메시지가 없어요${wait ? ` (${wait}초 기다림)` : ''}.${tail}`);
+    const tail = recent.length ? ` (${recent.length} message(s) already delivered via other tool headers in the last 10 min are not repeated)` : '';
+    return textResult(`[Slot ${slot}] No new messages${wait ? ` (waited ${wait}s)` : ''}.${tail}`);
   }));
 }
 
-const INSTRUCTIONS_CLAUDE_CODE = `CDPM: Chrome 슬롯 1~30번을 CDP로 조종한다. 슬롯 N의 CDP 포트는 ${PORT_BASE}+N (1번=${PORT_BASE + 1}).
-- 사용자가 "3번 봐줘"라고 하면 slot=3. 모든 도구에 slot을 넣는다.
-- Chrome은 사용자가 켜 달라고 말할 때만 browser_launch로 켠다. 꺼진 슬롯은 다른 도구가 켜지 않는다. 번호 없이 "켜줘"라고 하면 slot을 생략한다 (비어 있는 가장 작은 번호).
-- 켤 때 창 모드(보임)인지 헤드리스(안 보임)인지 사용자가 말하지 않았으면 먼저 물어본다. 여러 슬롯을 한꺼번에 켜면 한 번만 묻는다.
-- 시작할 페이지를 알면 browser_launch에 url(모든 슬롯 같은 주소)이나 urls(슬롯마다 다른 주소)를 넣어 켜자마자 바로 연다 (서브에이전트가 따로 이동하는 단계가 없어진다).
-- 여러 슬롯에 각각 다른 일을 시키면(예: "3개 띄워서 하나는 네이버, 하나는 다음…") 기본은 병렬이다: 메인은 browser_launch 한 번(slots/count, 시작 주소 url/urls)으로 슬롯을 켜는 것까지만 하고, 곧바로 슬롯마다 서브에이전트를 하나씩 맡긴다. 주소 이동·읽기·조작은 처음부터 서브에이전트가 한다 (메인이 슬롯마다 이동해 두지 않는다). 서브에이전트는 한 메시지 안에서 Agent 도구를 여러 번 함께 부르고, 모두 run_in_background: true로 띄운다 (하나씩 띄우거나 앞 서브에이전트가 끝나길 기다리지 않는다). 서브에이전트에게 주는 지시는 1~3줄로 짧게: 슬롯 번호, agent 이름(예: "네이버담당", 모든 도구의 agent에 넣게), 할 일만. cdpm-browser는 CDPM 사용법·규칙(로그인 감지, 신호 주고받기, 기다림 최소화)을 이미 알고 있으니 다시 설명하지 않는다 (긴 지시를 쓰는 시간만큼 늦어진다). subagent_type "cdpm-browser"(CDPM 전용 서브에이전트, 빨리 시작)가 있으면 그걸 쓴다. 서브에이전트는 동시에 20개까지라, 슬롯이 20개를 넘으면 20개를 먼저 띄우고 끝나는 대로 나머지를 띄운다. 메인이 슬롯을 돌아가며 직렬로 처리하지 않는다. 사용자가 순서대로 하라고 한 경우만 직렬로 한다.
-- 메인 에이전트와 서브에이전트의 역할 (여러 슬롯을 쓰는 작업, 사이트와 상관없이 항상):
-  - 메인: 사용자와 대화, 슬롯 켜기·끄기(browser_launch 한 번 / browser_close), 서브에이전트에게 슬롯과 할 일 나눠 주기(한 메시지에서 한꺼번에), 결과 합쳐서 사용자에게 보고. 메인은 슬롯 화면을 이동·읽기·조작하지 않는다.
-  - 서브에이전트: 맡은 슬롯 하나만. 주소 이동부터 읽기·입력·클릭, 사용자 로그인 등 완료 감지, 자기 몫의 결과물 작성, 필요하면 다른 서브에이전트와 신호 주고받기까지 전부 한다.
-  - 슬롯 하나로 끝나는 간단한 일은 메인이 직접 해도 된다.
-- 한 에이전트는 한 슬롯만 조작한다. 같은 에이전트가 60초 안에 다른 슬롯을 조작하면 CDPM이 거절한다 (보기는 괜찮음, 여러 슬롯을 함께 조작해야 하는 일만 multiSlot: true).
-- 결과물(보고서·HTML 등)도 서브에이전트가 각자 자기 몫을 써서 돌려주고, 메인은 합치기만 한다 (메인이 혼자 다 쓰면 그 단계가 가장 느리다).
-- 결과 맨 위 머리말에 슬롯의 탭 목록, 어느 탭에서 실행했는지, 경고, 새 메시지가 나온다. 매번 확인하고 다음 행동을 정한다.
-- 탭이 여러 개면 조작 도구에 tab(번호 또는 ID "t7")을 지정한다. 같은 슬롯을 여럿이 쓸 때는 browser_tab_new로 자기 탭을 열고 그 ID를 쓴다. 뒤에 있는 탭도 그대로 읽고 조작할 수 있다.
-- 조작 도구(이동·클릭·입력·키·뒤로·선택·스크롤·폼 채우기)에 read를 넣으면 조작 뒤 화면이 결과에 바로 붙는다. 다음 판단에 화면이 필요하면 따로 읽지 말고 read를 쓴다: 기사·글은 text, 버튼·링크를 눌러야 하면 snapshot, 같은 페이지에서 뭐가 바뀌었는지만 보면 되면 changes (가장 짧다).
-- 같은 페이지의 입력칸 여러 개(로그인, 검색 조건 등)는 browser_fill 한 번으로 채운다. 파일 첨부는 browser_upload (파일 칸 ref, 또는 "첨부" 버튼을 클릭한 뒤 ref 없이). 마우스를 올려야 열리는 메뉴는 browser_hover, 드래그·슬라이더는 browser_drag, 다운로드는 버튼을 누른 뒤 browser_download_wait로 저장된 파일 경로를 받는다.
-- 긴 페이지는 browser_snapshot이 위에서부터 1쪽만 준다. 쪽을 넘기지 말고, 입력칸·버튼을 찾을 때는 interactive=true나 find="제목|subject"(| 로 여러 낱말), 글 내용은 browser_text를 쓴다. summary를 남기면 browser_status에서 다른 에이전트가 볼 수 있다.
-- 기다림은 최소한으로. 고정 시간 대기(seconds)는 쓰지 않는다.
-- 사용자가 직접 할 일(어느 사이트든 로그인·본인 인증·보안문자·결제 승인 등)이 있으면 "됐다고 알려 달라"고 하지 않는다. 서브에이전트를 먼저 띄워 두고, 각자 화면을 건드리지 않은 채(새로고침·다시 이동 금지: 입력 중인 내용이 사라짐) browser_wait로 완료를 스스로 감지해 이어서 진행한다: 주소 변화(url), 로그인 폼 글자가 사라짐(gone), 로그인 뒤에만 보이는 글자(text). 사용자가 아이디·비밀번호를 알려 주면(헤드리스 등) 그대로 입력해 로그인한다.
-- 다른 에이전트와 함께 일할 때(예: 서로 메일 주고받기)는 실시간으로 신호를 주고받는다: 자기 일을 끝내면 바로 slot_send(slot=상대가 맡은 슬롯, to=상대 이름)로 "보냈어" 같이 알리고, 상대를 기다릴 때는 화면을 반복해서 새로고침하지 말고 slot_inbox(slot=내 슬롯, wait=120~600)로 기다린다 (오는 즉시 돌아옴). 신호를 받으면 바로 화면을 확인하고 움직인다.
-- 다른 슬롯의 화면은 보기 도구(browser_snapshot·browser_text·browser_screenshot)로 언제든 볼 수 있다 (조작만 그 슬롯 담당이 한다).
-- 창 크기·위치·뷰포트는 절대 바꾸지 않는다. 사용자가 보는 탭을 바꾸는 browser_tab_select는 사용자가 원할 때만 쓴다.
-- 사용자가 "N번 멈춰"라고 하면 slot_pause, "다시 해"라고 하면 slot_resume. 멈춘 슬롯은 조작이 거절된다: 맡은 에이전트는 조작하지 말고 slot_inbox(wait=600)로 기다리다가, 다시 시작 메시지를 받으면 browser_snapshot으로 화면을 다시 읽고 이어 간다 (스스로 다시 시작하지 않는다).
-- 알림창(alert/confirm/prompt/beforeunload)이 뜨면 웬만하면 내용을 보고 직접 판단해서 browser_dialog로 확인·취소한다. 사용자가 시키지 않은 되돌릴 수 없는 일(결제·삭제 등)을 확정하는 창일 때만 사용자에게 묻는다.`;
+const INSTRUCTIONS_CLAUDE_CODE = `CDPM: controls Chrome slots 1-30 over CDP. Slot N's CDP port is ${PORT_BASE}+N (slot 1 = ${PORT_BASE + 1}).
+- Always reply to the user in the language the user writes in (these instructions are in English only to save tokens).
+- "Look at 3" / "slot 3" means slot=3. Pass slot to every tool.
+- Start Chrome with browser_launch only when the user asks. Other tools never start a closed slot. "Start one" with no number → omit slot (lowest free slot).
+- The user decides windowed (visible) vs headless (hidden): headless: true only if they say "headless", "hidden" or "no window"; false for "visible window" or "headful". If unstated, don't guess; ask first (once for multiple slots).
+- If the start page is known, pass url (same for all slots) or urls (per slot) to browser_launch so it opens right away (no separate navigation step for subagents).
+- Different jobs on multiple slots (e.g. "open 3, one for Naver, one for Daum…", "log in on 1 and open another site on 2") run in parallel by default: main only calls browser_launch once (slots/count, start URLs url/urls), then immediately hands each slot to its own subagent. Subagents do everything from the first navigation (main doesn't pre-navigate slots). Call the Agent tool several times in one message, all with run_in_background: true (don't launch one at a time or wait for earlier ones). Keep subagent prompts to 1-3 lines: slot number, agent name (e.g. "naver-agent", passed as agent on every tool), and the task. cdpm-browser already knows CDPM usage and rules (login detection, signaling, minimal waiting), so don't re-explain (long prompts cost time). Use subagent_type "cdpm-browser" (CDPM-specific subagent, fast start) if available. At most 20 subagents run at once; with more than 20 slots, launch 20 first and the rest as they finish. Main never works through slots serially, unless the user asks for sequential order.
+- Different jobs on tabs within one slot (e.g. "log in on slot 1's first tab, do X on another site in the second tab") are split per tab just like slots: one subagent per tab (main doesn't hop between tabs). Each uses only its tab number or opens its own with browser_tab_new, with a distinct agent name per tab (e.g. "slot1-tab1"). Same slot, so the one-agent-one-slot rule doesn't apply, and actions queue per tab and run concurrently. If a tab's job needs another to finish first (e.g. only works after login), its agent waits with slot_inbox(wait) and the other notifies with slot_send as soon as it's done (login carries over to other tabs: same profile).
+- Roles of main agent and subagents (multi-slot/multi-tab work, any site, always):
+  - Main: talks with the user, starts/stops slots (one browser_launch / browser_close), assigns slots and tasks to subagents (all in one message), merges results and reports to the user. Main does not navigate, read or operate slot pages.
+  - Subagent: one slot only. Does everything: navigation, reading, typing, clicking, detecting completion of user login etc., writing its share of the output, and signaling other subagents if needed.
+  - Simple jobs that need just one slot can be done by main directly.
+- One agent operates one slot. If the same agent operates another slot within 60s, CDPM refuses (viewing is fine; use multiSlot: true only for jobs that must operate several slots together).
+- Outputs (reports, HTML, etc.) are written by each subagent for its share; main only merges (main writing everything alone is the slowest step).
+- The header at the top of each result shows the slot's tabs, which tab ran, warnings and new messages. Check it every time to decide the next step.
+- With multiple tabs, pass tab (number or ID "t7") to action tools. When several agents share a slot, open your own tab with browser_tab_new and use its ID. Background tabs can be read and operated as is.
+- Action tools (navigate, click, type, key, back, select, scroll, fill) accept read, which appends the page after the action. If the next decision needs the page, use read instead of a separate read call: text for articles, snapshot when you need buttons/links to click, changes to see only what changed on the same page (shortest).
+- Fill several inputs on one page (login, search filters, etc.) with one browser_fill. File attach: browser_upload (file input ref, or click the "attach" button first, then call without ref). Hover menus: browser_hover; drag/sliders: browser_drag; downloads: click the button, then browser_download_wait returns the saved file path.
+- browser_snapshot returns only page 1 (top) of long pages. Don't page through: to find inputs/buttons use interactive=true or find="title|subject" (| for alternatives); for text content use browser_text. A summary you leave is visible to other agents in browser_status.
+- Keep waits minimal. Never use fixed waits (seconds).
+- Waits that may take minutes (bulk collection/processing, waiting for user login, etc.) are not done by main: hand them to a background subagent (run_in_background: true), then tell the user the status right away and keep the conversation going. While main waits in browser_wait or runs a long foreground shell command, it can't answer the user.
+- When the user must do something (login, identity verification, CAPTCHA, payment approval, on any site), don't ask them to "tell me when done". Start subagents first; each, without touching the page (no reload or re-navigation: it wipes the user's input), detects completion with browser_wait and continues: URL change (url), login form text gone (gone), or text shown only after login (text). If the user provides an ID/password (e.g. headless), type it and log in.
+- When working with other agents (e.g. emailing each other), signal in real time: as soon as your part is done, slot_send(slot=their slot, to=their name) something like "sent"; when waiting for them, don't reload the page repeatedly, use slot_inbox(slot=your slot, wait=120-600) (returns as soon as a message arrives). On a signal, check the page and act right away.
+- Other slots' pages can be viewed anytime with view tools (browser_snapshot, browser_text, browser_screenshot); only that slot's owner operates it.
+- Never change window size/position or viewport. Use browser_tab_select (changes the tab the user sees) only when the user wants it.
+- "Pause N" → slot_pause; "resume" → slot_resume. Actions on a paused slot are refused: its agent must not operate it and waits with slot_inbox(wait=600); on the resume message it re-reads with browser_snapshot and continues (never resumes on its own).
+- When a dialog (alert/confirm/prompt/beforeunload) appears, judge from its content and accept/dismiss it yourself with browser_dialog. Ask the user only when it confirms an irreversible action they didn't request (payment, deletion, etc.).`;
 
 /** Claude Code가 아닌 클라이언트(Cursor, Claude Desktop 등)용: Agent 도구·run_in_background·cdpm-browser처럼 Claude Code에만 있는 말을 뺀다. */
-const GENERIC_PARALLEL = '- 여러 슬롯에 각각 다른 일을 시키면: 서브에이전트(하위 에이전트)를 쓸 수 있는 클라이언트면 슬롯마다 하나씩 맡겨 병렬로 처리한다 (메인은 browser_launch 한 번으로 켜기까지만). ' +
-  '서브에이전트가 없으면 슬롯마다 다른 agent 이름(예: "1번담당", "2번담당")을 넣어 차례로 처리한다 (같은 agent 이름으로 60초 안에 다른 슬롯을 조작하면 거절된다).';
+const GENERIC_PARALLEL = '- Different jobs on multiple slots (e.g. "open 3, one for Naver, one for Daum…", "log in on 1 and open another site on 2"): if the client supports subagents, hand each slot to one and run them in parallel (main only launches them with one browser_launch). ' +
+  'Without subagents, process slots in turn with a distinct agent name per slot (e.g. "slot1-agent", "slot2-agent"); the same agent name operating another slot within 60s is refused.';
 
 function genericInstructions(): string {
   return INSTRUCTIONS_CLAUDE_CODE
     .split('\n')
     // Claude Code 전용 병렬 처리 안내(Agent 도구·cdpm-browser) → 일반 안내로
-    .map((l) => (l.startsWith('- 여러 슬롯에 각각 다른 일을 시키면') ? GENERIC_PARALLEL : l))
-    .map((l) => l.replace('서브에이전트를 먼저 띄워 두고, 각자', '(서브에이전트를 쓰면 먼저 띄워 두고) 각자'))
+    .map((l) => (l.startsWith('- Different jobs on multiple slots') ? GENERIC_PARALLEL : l))
+    .map((l) => l.replace('Start subagents first; each, without touching', '(With subagents, start them first.) Each agent, without touching'))
+    .map((l) => l.replace('hand them to a background subagent (run_in_background: true)', 'hand them to a subagent or background task'))
     .join('\n');
 }
 

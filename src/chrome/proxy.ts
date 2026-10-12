@@ -22,12 +22,12 @@ const SCHEMES: Record<string, ProxySpec['scheme']> = { http: 'http', https: 'htt
  */
 export function parseProxy(input: string): ProxySpec {
   let s = input.trim();
-  const bad = () => new CdpmError(`프록시 주소를 알아보지 못했어요: "${maskProxyText(input)}". 예: 1.2.3.4:8080, http://아이디:비번@1.2.3.4:8080, socks5://1.2.3.4:1080, 1.2.3.4:8080:아이디:비번`);
+  const bad = () => new CdpmError(`Unrecognized proxy: "${maskProxyText(input)}". Examples: 1.2.3.4:8080, http://user:pass@1.2.3.4:8080, socks5://1.2.3.4:1080, 1.2.3.4:8080:user:pass`);
   let scheme: ProxySpec['scheme'] = 'http';
   const m = /^([a-z0-9]+):\/\//i.exec(s);
   if (m) {
     const sc = SCHEMES[m[1].toLowerCase()];
-    if (!sc) throw new CdpmError(`지원하지 않는 프록시 종류예요: ${m[1]} (http, https, socks5, socks4만 돼요)`);
+    if (!sc) throw new CdpmError(`Unsupported proxy scheme: ${m[1]} (use http, https, socks5 or socks4)`);
     scheme = sc;
     s = s.slice(m[0].length);
   }
@@ -59,7 +59,7 @@ export function parseProxy(input: string): ProxySpec {
   };
   user = dec(user);
   pass = dec(pass);
-  if (user && scheme === 'socks4') throw new CdpmError('socks4 프록시는 아이디·비밀번호를 쓸 수 없어요. socks5나 http로 주세요.');
+  if (user && scheme === 'socks4') throw new CdpmError('socks4 proxies do not support username/password. Use socks5 or http.');
   return { scheme, host: hp[1], port, ...(user ? { user, pass: pass ?? '' } : {}) };
 }
 
@@ -93,6 +93,6 @@ async function startForwarder(slot: number, p: ProxySpec): Promise<number> {
     });
     return Number(/LISTEN (\d+)/.exec(line ?? '')?.[1]);
   } catch (e) {
-    throw new CdpmError(`프록시 중계 프로그램을 띄우지 못했어요: ${(e as Error).message}`);
+    throw new CdpmError(`Failed to start proxy forwarder: ${(e as Error).message}`);
   }
 }

@@ -33,7 +33,7 @@ describe('슬롯', () => {
   it('범위 검사', () => {
     assert.ok(isValidSlot(1) && isValidSlot(30));
     for (const bad of [0, 31, 1.5, -1, '3', NaN]) assert.ok(!isValidSlot(bad));
-    assert.throws(() => portOf(31), /1~30번/);
+    assert.throws(() => portOf(31), /1-30/);
   });
   it('30색이 모두 다르고 흰 글씨 대비 4.5 이상', () => {
     assert.equal(SLOT_COLORS.length, 30);
@@ -74,7 +74,7 @@ describe('Chrome 찾기', () => {
     assert.equal(findChromeWith(deps({ exists: (x) => x === p })), p);
   });
   it('없으면 찾아본 경로를 알려줌', () => {
-    assert.throws(() => findChromeWith(deps()), /찾아본 경로[\s\S]*Program Files/);
+    assert.throws(() => findChromeWith(deps()), /Searched:[\s\S]*Program Files/);
   });
 });
 
@@ -112,7 +112,7 @@ describe('탭 선택 규칙', () => {
   });
   it('여러 개 + 조작 → 지정 요구', () => {
     const r = pickTab(tabs, undefined, 'action');
-    assert.ok('error' in r && /탭이 2개/.test(r.error));
+    assert.ok('error' in r && /There are 2 tabs/.test(r.error));
   });
   it('번호와 ID 모두 지정 가능', () => {
     const a = pickTab(tabs, 2, 'action');
@@ -129,9 +129,9 @@ describe('소유 경고', () => {
     const t = tab(1, 't1', { rec: { id: 't1', seq: 1, seenAt: now, openedBy: '가격비교', last: { agent: '리뷰수집', action: '클릭', at: now } } });
     const w = ownershipWarnings(t, '나');
     assert.equal(w.length, 1);
-    assert.match(w[0], /이 탭 \[t1\]은 리뷰수집이 방금 클릭했어요/);
+    assert.match(w[0], /Tab \[t1\] was used by 리뷰수집 just now \(클릭\)/);
     const t2 = tab(2, 't2', { rec: { id: 't2', seq: 2, seenAt: now, openedBy: 'x', last: { agent: '가격비교', action: '입력', at: now } } });
-    assert.match(ownershipWarnings(t2, '나')[0], /가격비교가 /);
+    assert.match(ownershipWarnings(t2, '나')[0], /by 가격비교 /);
   });
   it('남이 열었어도 최근 조작이 없거나, 내가 마지막이면 경고 없음', () => {
     const old = new Date(Date.now() - 10 * 60_000).toISOString();
@@ -141,7 +141,7 @@ describe('소유 경고', () => {
   });
   it('없는 탭을 지정하면 지금 있는 탭을 알려줌', () => {
     const r = pickTab([tab(1, 't1'), tab(2, 't4')], 9, 'action');
-    assert.ok('error' in r && /지금 있는 탭: 1번 \[t1\], 2번 \[t4\]/.test(r.error));
+    assert.ok('error' in r && /Open tabs: 1 \[t1\], 2 \[t4\]/.test(r.error));
   });
 });
 
@@ -167,11 +167,11 @@ describe('머리말', () => {
       messages: [{ seq: 1, at: new Date().toISOString(), from: 'A', to: null, text: '안녕' }],
       dialogs: new Map([['T1', { type: 'alert', message: '로그인 필요', at: '' }]]),
     });
-    assert.match(h, /^\[3번\] 탭 2개 · 2번 탭 \[t7\]에서 실행함/);
+    assert.match(h, /^\[Slot 3\] 2 tab\(s\) · ran on tab 2 \[t7\]/);
     assert.match(h, /\n> 2\. \[t7\]/);
-    assert.match(h, /\[주의\] alert 알림창 떠 있음 \(1번 탭 \[t1\]\): "로그인 필요"/);
-    assert.match(h, /\[주의\] 조심/);
-    assert.match(h, /새 메시지 1개 \(여기서 읽음 처리됨[^)]*\)\n {2}A \(방금\): 안녕/);
+    assert.match(h, /\[warning\] dialog open \(alert\) on tab 1 \[t1\]: "로그인 필요"/);
+    assert.match(h, /\[warning\] 조심/);
+    assert.match(h, /1 new message\(s\) \(marked read here[^)]*\)\n {2}A \(just now\): 안녕/);
   });
 });
 
@@ -236,9 +236,9 @@ describe('유틸', () => {
   });
   it('지난 시간', () => {
     const now = Date.parse('2026-01-01T00:10:00Z');
-    assert.equal(ago('2026-01-01T00:09:59Z', now), '방금');
-    assert.equal(ago('2026-01-01T00:09:30Z', now), '30초 전');
-    assert.equal(ago('2026-01-01T00:07:00Z', now), '3분 전');
+    assert.equal(ago('2026-01-01T00:09:59Z', now), 'just now');
+    assert.equal(ago('2026-01-01T00:09:30Z', now), '30s ago');
+    assert.equal(ago('2026-01-01T00:07:00Z', now), '3m ago');
   });
 });
 

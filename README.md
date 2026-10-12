@@ -18,6 +18,7 @@ An MCP server that runs **Chrome slots 1–30** over the Chrome DevTools Protoco
 - **Built for many agents.** Every tool takes `slot` explicitly, records who opened each tab and who touched it last, warns (without blocking) when you act on a tab someone else just used, and serializes concurrent commands on the same tab.
 - **Agents can talk** with `slot_send` / `slot_inbox`; unread messages are also delivered at the top of every result.
 - **Status line.** `cdpm statusline` prints live slots as slot-colored numbers; each slot shows the title of the tab last acted on (no agent names; only blank/new tabs left shows just the number): `CDPM  1 NAVER  2 Daum`. It fits the terminal width (from ccstatusline): titles shrink first, then only numbers, then `+N` for the rest. A paused slot (`slot_pause` / `cdpm pause`) shows its number in dim gray instead of its slot color. A dim `CDPM  -` when none are running. Ending a slot's Chrome yourself (closing its last window on Windows, Cmd+Q on macOS) removes it right away, and titles are read live.
+- **English for the AI.** Server instructions, tool descriptions and tool results are in English to save tokens; Claude is told to answer in the user's language. CLI output is in Korean.
 - **Leaves the user's PC alone.** No window, viewport or zoom changes, and actions that would pop up OS windows are refused (see below).
 
 > Works on Windows 11 and macOS. Per-slot icons: taskbar on Windows, Dock on macOS (see "macOS" below).

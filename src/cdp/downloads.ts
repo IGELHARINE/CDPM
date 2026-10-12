@@ -60,15 +60,15 @@ export async function waitDownload(slot: number, timeoutSec: number, stop?: () =
     const d = list.at(-1);
     if (d && d.state !== 'inProgress') {
       d.reported = true;
-      if (d.state === 'canceled') return `다운로드가 취소됐어요: ${d.file}`;
+      if (d.state === 'canceled') return `Download canceled: ${d.file}`;
       const size = d.totalBytes || d.receivedBytes;
-      return `다운로드가 끝났어요: ${d.filePath ?? d.file}${size ? ` (${(size / 1024).toFixed(1)}KB)` : ''}`;
+      return `Download finished: ${d.filePath ?? d.file}${size ? ` (${(size / 1024).toFixed(1)}KB)` : ''}`;
     }
     const why = stop?.();
     if (why) return why;
     if (Date.now() > until) {
-      if (d) return `${timeoutSec}초 안에 다운로드가 끝나지 않았어요: ${d.file} (${d.receivedBytes}/${d.totalBytes || '?'}바이트). 더 기다리려면 다시 부르세요.`;
-      throw new Error('진행 중이거나 최근에 시작된 다운로드가 없어요. 다운로드 버튼을 누른 뒤에 부르세요.');
+      if (d) return `Download not finished after ${timeoutSec}s: ${d.file} (${d.receivedBytes}/${d.totalBytes || '?'} bytes). Call again to keep waiting.`;
+      throw new Error('No download in progress or recently started. Call this after clicking the download button.');
     }
     await new Promise((r) => setTimeout(r, 100));
   }

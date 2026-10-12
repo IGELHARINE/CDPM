@@ -47,9 +47,9 @@ export function findChromeWith(deps: FinderDeps): string {
   const found = candidates.find((p) => deps.exists(p));
   if (found) return found;
   throw new CdpmError(
-    'Chrome을 찾지 못했습니다. 찾아본 경로:\n' +
+    'Chrome not found. Searched:\n' +
     candidates.map((c) => `  - ${c}`).join('\n') +
-    `\n${paths.config()} 파일에 {"chromePath": "Chrome 실행 파일 전체 경로"}를 넣어 직접 지정할 수 있어요.`,
+    `\nSet it manually in ${paths.config()}: {"chromePath": "<full path to Chrome executable>"}`,
   );
 }
 

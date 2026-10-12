@@ -16,18 +16,18 @@ export interface HeaderInput {
 }
 
 export function tabLines(tabs: TabView[], markTargetId?: string, withSummary = false): string[] {
-  const titles = tabs.map((t) => truncate(t.title || '(제목 없음)', 34));
+  const titles = tabs.map((t) => truncate(t.title || '(untitled)', 34));
   const urls = tabs.map((t) => shortUrl(t.url, 34));
   const tw = Math.max(0, ...titles.map(displayWidth));
   const uw = Math.max(0, ...urls.map(displayWidth));
   const lines: string[] = [];
   tabs.forEach((t, i) => {
     const mark = t.targetId === markTargetId ? '>' : ' ';
-    const last = t.rec.last ? `  마지막: ${t.rec.last.agent} ${t.rec.last.action} (${ago(t.rec.last.at)})` : '';
-    const active = t.active ? ' ·앞' : '';
-    lines.push(`${mark} ${t.no}. [${t.id}]${active} ${padEnd(titles[i], tw)}  ${padEnd(urls[i], uw)}  연 사람: ${t.rec.openedBy}${last}`);
+    const last = t.rec.last ? `  last: ${t.rec.last.agent} ${t.rec.last.action} (${ago(t.rec.last.at)})` : '';
+    const active = t.active ? ' ·front' : '';
+    lines.push(`${mark} ${t.no}. [${t.id}]${active} ${padEnd(titles[i], tw)}  ${padEnd(urls[i], uw)}  opened by: ${t.rec.openedBy}${last}`);
     if (withSummary && t.rec.summary) {
-      lines.push(`       요약: ${t.rec.summary.agent} — ${t.rec.summary.text} (${ago(t.rec.summary.at)})`);
+      lines.push(`       summary: ${t.rec.summary.agent} — ${t.rec.summary.text} (${ago(t.rec.summary.at)})`);
     }
   });
   return lines;
@@ -35,15 +35,15 @@ export function tabLines(tabs: TabView[], markTargetId?: string, withSummary = f
 
 export function formatHeader(h: HeaderInput): string {
   const exec = h.tabs.find((t) => t.targetId === h.executedTargetId);
-  const lines = [`[${h.slot}번] 탭 ${h.tabs.length}개${exec ? ` · ${exec.no}번 탭 [${exec.id}]에서 실행함` : ''}`];
+  const lines = [`[Slot ${h.slot}] ${h.tabs.length} tab(s)${exec ? ` · ran on tab ${exec.no} [${exec.id}]` : ''}`];
   lines.push(...tabLines(h.tabs, h.executedTargetId));
   for (const t of h.tabs) {
     const d = h.dialogs?.get(t.targetId);
-    if (d) lines.push(`[주의] ${d.type} 알림창 떠 있음 (${t.no}번 탭 [${t.id}]): "${truncate(d.message, 80)}" — 내용을 보고 browser_dialog로 직접 처리 (시키지 않은 결제·삭제 같은 확정 창만 사용자에게 묻기)`);
+    if (d) lines.push(`[warning] dialog open (${d.type}) on tab ${t.no} [${t.id}]: "${truncate(d.message, 80)}" — read it and handle it yourself with browser_dialog (ask the user only for confirmations of unrequested payment/deletion etc.)`);
   }
-  for (const w of h.warnings ?? []) lines.push(`[주의] ${w}`);
+  for (const w of h.warnings ?? []) lines.push(`[warning] ${w}`);
   if (h.messages?.length) {
-    lines.push(`새 메시지 ${h.messages.length}개 (여기서 읽음 처리됨 — slot_inbox에는 다시 나오지 않아요)`);
+    lines.push(`${h.messages.length} new message(s) (marked read here; won't appear again in slot_inbox)`);
     lines.push(...formatMessages(h.messages).map((l) => `  ${l}`));
   }
   return lines.join('\n');
@@ -54,9 +54,9 @@ export function formatMessages(msgs: Message[]): string[] {
 }
 
 export function formatSlotStatus(slot: number, rec: SlotRecord, tabs: TabView[] | null): string {
-  const mode = rec.headless ? ' · 헤드리스' : '';
-  const lines = [`[${slot}번] 포트 ${portOf(slot)}${mode} · 탭 ${tabs ? `${tabs.length}개` : '?'} · 띄운 쪽: ${rec.launchedBy ?? '(외부)'} (${ago(rec.launchedAt)})`];
-  if (rec.summary) lines.push(`  요약: ${rec.summary.agent} — ${rec.summary.text} (${ago(rec.summary.at)})`);
+  const mode = rec.headless ? ' · headless' : '';
+  const lines = [`[Slot ${slot}] port ${portOf(slot)}${mode} · ${tabs ? `${tabs.length}` : '?'} tab(s) · launched by: ${rec.launchedBy ?? '(external)'} (${ago(rec.launchedAt)})`];
+  if (rec.summary) lines.push(`  summary: ${rec.summary.agent} — ${rec.summary.text} (${ago(rec.summary.at)})`);
   if (tabs) lines.push(...tabLines(tabs, undefined, true).map((l) => `  ${l}`));
   return lines.join('\n');
 }

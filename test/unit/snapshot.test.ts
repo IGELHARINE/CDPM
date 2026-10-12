@@ -56,7 +56,7 @@ describe('스냅샷 변환', () => {
     const sub = flat(n('RootWebArea', '', [n('button', '프레임 버튼')]));
     const frames: FrameTrees = new Map<number, { nodes: AXNode[]; frameId?: string } | 'unsupported'>([[iframe.backendDOMNodeId!, { nodes: sub, frameId: 'F1' }], [payment.backendDOMNodeId!, 'unsupported']]);
     const snap = formatAxTree(flat(tree), { frames, mainFrameId: 'MAIN' });
-    assert.match(snap.text, /^- document\n {2}- button "안쪽" \[e1\]\n {2}- iframe "광고"\n {4}- document\n {6}- button "프레임 버튼" \[e2\]\n {2}- iframe "결제" \(읽지 못함\)$/);
+    assert.match(snap.text, /^- document\n {2}- button "안쪽" \[e1\]\n {2}- iframe "광고"\n {4}- document\n {6}- button "프레임 버튼" \[e2\]\n {2}- iframe "결제" \(unreadable\)$/);
     assert.equal(snap.refs.get('e1')!.frameId, 'MAIN');
     assert.equal(snap.refs.get('e2')!.frameId, 'F1');
   });

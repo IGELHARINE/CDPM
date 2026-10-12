@@ -47,13 +47,13 @@ export function spawnOrphan(cmd: string, args: string[], opts: OrphanOptions = {
     });
     let out = '';
     bridge.stdout!.on('data', (d) => (out += String(d)));
-    bridge.on('error', (e) => reject(new CdpmError(`실행하지 못했어요: ${e.message}`)));
+    bridge.on('error', (e) => reject(new CdpmError(`Failed to start: ${e.message}`)));
     bridge.on('exit', () => {
       const pid = Number(/PID (\d+)/.exec(out)?.[1]);
       const line = /LINE (.*)/.exec(out)?.[1];
       if (pid && (!opts.waitLine || line)) return resolve({ pid, line });
-      const why = /ERR (.*)/.exec(out)?.[1] ?? (/EXIT (.*)/.exec(out) ? `바로 끝났어요 (종료 코드 ${/EXIT (.*)/.exec(out)![1]})` : /TIMEOUT/.test(out) ? '준비 신호가 오지 않았어요' : out.trim());
-      reject(new CdpmError(`실행하지 못했어요: ${why}`));
+      const why = /ERR (.*)/.exec(out)?.[1] ?? (/EXIT (.*)/.exec(out) ? `exited immediately (code ${/EXIT (.*)/.exec(out)![1]})` : /TIMEOUT/.test(out) ? 'no ready signal' : out.trim());
+      reject(new CdpmError(`Failed to start: ${why}`));
     });
   });
 }

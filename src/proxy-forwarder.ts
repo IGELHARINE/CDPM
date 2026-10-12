@@ -23,7 +23,7 @@ function tunnel(host: string, port: number): Promise<net.Socket> {
     const s = connectUpstream();
     const fail = (e: Error) => { s.destroy(); reject(e); };
     s.once('error', fail);
-    s.setTimeout(20_000, () => fail(new Error('프록시 응답 없음')));
+    s.setTimeout(20_000, () => fail(new Error('Proxy not responding')));
     const ready = () => { s.setTimeout(0); s.removeListener('error', fail); resolve(s); };
     s.once(up.scheme === 'https' ? 'secureConnect' : 'connect', () => {
       if (up.scheme === 'socks5') return socks5(s, host, port).then(ready, fail);
@@ -36,7 +36,7 @@ function tunnel(host: string, port: number): Promise<net.Socket> {
         s.removeListener('data', onData);
         s.pause(); // 다 읽은 뒤 멈춰 둬야, 이어서 온 데이터가 읽는 쪽이 붙기 전에 버려지지 않는다
         const status = /^HTTP\/1\.[01] (\d{3})/.exec(buf.toString('latin1'))?.[1];
-        if (status !== '200') return fail(new Error(`프록시가 연결을 거절했어요 (HTTP ${status ?? '?'})`));
+        if (status !== '200') return fail(new Error(`Proxy refused the connection (HTTP ${status ?? '?'})`));
         const rest = buf.subarray(end + 4);
         if (rest.length) s.unshift(rest);
         ready();
@@ -58,7 +58,7 @@ function readBytes(s: net.Socket, n: number): Promise<Buffer> {
       if (buf.length > n) s.unshift(buf.subarray(n));
       resolve(buf.subarray(0, n));
     };
-    const onClose = () => reject(new Error('프록시가 연결을 끊었어요'));
+    const onClose = () => reject(new Error('Proxy closed the connection'));
     s.on('data', onData);
     s.once('close', onClose);
     s.resume(); // 앞에서 멈춰 둔 소켓은 data 리스너만으로는 다시 흐르지 않는다
@@ -72,8 +72,8 @@ async function socks5(s: net.Socket, host: string, port: number): Promise<void> 
     const u = Buffer.from(up.user ?? ''), p = Buffer.from(up.pass ?? '');
     s.write(Buffer.concat([Buffer.from([1, u.length]), u, Buffer.from([p.length]), p]));
     const [, ok] = await readBytes(s, 2);
-    if (ok !== 0) throw new Error('socks5 프록시가 아이디·비밀번호를 거절했어요');
-  } else if (method !== 0) throw new Error('socks5 프록시가 인증 방식을 받지 않았어요');
+    if (ok !== 0) throw new Error('socks5 proxy rejected the username/password');
+  } else if (method !== 0) throw new Error('socks5 proxy rejected the auth method');
   // 주소 이름을 그대로 넘겨 DNS도 프록시 쪽에서 풀게 한다 (이 PC의 DNS로 새지 않게)
   const h = host.replace(/^\[|\]$/g, '');
   const ipType = net.isIP(h);
@@ -82,7 +82,7 @@ async function socks5(s: net.Socket, host: string, port: number): Promise<void> 
     : Buffer.concat([Buffer.from([3, Buffer.byteLength(h)]), Buffer.from(h)]);
   s.write(Buffer.concat([Buffer.from([5, 1, 0]), addr, Buffer.from([port >> 8, port & 255])]));
   const head = await readBytes(s, 4);
-  if (head[1] !== 0) throw new Error(`socks5 프록시가 연결을 거절했어요 (코드 ${head[1]})`);
+  if (head[1] !== 0) throw new Error(`socks5 proxy refused the connection (code ${head[1]})`);
   const len = head[3] === 1 ? 4 : head[3] === 4 ? 16 : (await readBytes(s, 1))[0];
   await readBytes(s, len + 2);
 }
@@ -106,7 +106,7 @@ const server = http.createServer((req, res) => {
   try { target = new URL(req.url ?? ''); } catch { res.writeHead(400).end(); return; }
   const headers = { ...req.headers };
   delete headers['proxy-connection'];
-  const done = (e: Error) => { if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' }); res.end(`CDPM 프록시 중계 오류: ${e.message}`); };
+  const done = (e: Error) => { if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' }); res.end(`CDPM proxy forwarder error: ${e.message}`); };
   if (up.scheme === 'socks5') {
     const port = Number(target.port || 80);
     tunnel(target.hostname, port).then((sock) => {
@@ -139,7 +139,7 @@ server.on('connect', (req, client, head) => {
     remote.pipe(client);
     client.pipe(remote);
   }, (e: Error) => {
-    client.end(`HTTP/1.1 502 Bad Gateway\r\ncontent-type: text/plain; charset=utf-8\r\n\r\nCDPM 프록시 중계 오류: ${e.message}`);
+    client.end(`HTTP/1.1 502 Bad Gateway\r\ncontent-type: text/plain; charset=utf-8\r\n\r\nCDPM proxy forwarder error: ${e.message}`);
   });
 });
 

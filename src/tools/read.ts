@@ -10,13 +10,13 @@ const MAX_REMOVED_SHOWN = 15;
 
 function footer(p: { page: number; pages: number }, total: number): string {
   if (p.pages <= 1) return '';
-  return `\n— 1/${p.pages}쪽 (전체 ${total.toLocaleString()}자) · 이어 보기: browser_snapshot page=2`;
+  return `\n— page 1/${p.pages} (${total.toLocaleString()} chars total) · continue: browser_snapshot page=2`;
 }
 
 /** 스냅샷 1쪽 (browser_snapshot과 같은 모양). */
 async function snapshotPage1(s: PageSession, agent: string): Promise<string> {
   const { text } = await takeSnapshot(s, agent);
-  if (!text) return '(읽을 수 있는 요소가 없어요)';
+  if (!text) return '(no readable elements)';
   const p = paginate(text, 1);
   return p.body + footer(p, text.length);
 }
@@ -30,9 +30,9 @@ async function changes(s: PageSession, agent: string): Promise<string> {
   const { text, url } = await takeSnapshot(s, agent);
   const samePage = prev && prev.url.split('#')[0] === url.split('#')[0];
   if (!prev || !samePage) {
-    if (!text) return '(읽을 수 있는 요소가 없어요)';
+    if (!text) return '(no readable elements)';
     const p = paginate(text, 1);
-    return `(${prev ? '다른 페이지로 바뀌어서' : '비교할 직전 화면이 없어서'} 전체를 보여줘요)\n${p.body}${footer(p, text.length)}`;
+    return `(${prev ? 'page changed' : 'no previous snapshot to compare'}; showing full page)\n${p.body}${footer(p, text.length)}`;
   }
   const count = (lines: string[]) => {
     const m = new Map<string, number>();
@@ -56,15 +56,15 @@ async function changes(s: PageSession, agent: string): Promise<string> {
     seenOld.set(l, n);
     if (n > (newCount.get(l) ?? 0)) removed.push(l);
   }
-  if (!added.length && !removed.length) return '(화면 변화 없음)';
-  const out: string[] = [`바뀐 부분 (직전 화면 대비): 새로 생김 ${added.length}줄 · 사라짐 ${removed.length}줄`];
+  if (!added.length && !removed.length) return '(no changes)';
+  const out: string[] = [`Changes since last snapshot: ${added.length} added · ${removed.length} removed`];
   if (added.length) {
     const p = paginate(added.map((l) => `+ ${l.trimStart()}`).join('\n'), 1);
-    out.push(p.body + (p.pages > 1 ? `\n— 새로 생긴 줄이 많아 일부만 보여줘요 (전체: browser_snapshot)` : ''));
+    out.push(p.body + (p.pages > 1 ? `\n— too many new lines; partial (full: browser_snapshot)` : ''));
   }
   if (removed.length) {
     out.push(...removed.slice(0, MAX_REMOVED_SHOWN).map((l) => `- ${l.trimStart()}`));
-    if (removed.length > MAX_REMOVED_SHOWN) out.push(`- … 외 ${removed.length - MAX_REMOVED_SHOWN}줄`);
+    if (removed.length > MAX_REMOVED_SHOWN) out.push(`- … ${removed.length - MAX_REMOVED_SHOWN} more`);
   }
   return out.join('\n');
 }
@@ -74,8 +74,8 @@ export async function readAfter(s: PageSession, agent: string, mode: ReadMode): 
   if (s.dialog) return '';
   try {
     const body = mode === 'text' ? await act.extractText(s, agent, undefined, 1) : mode === 'snapshot' ? await snapshotPage1(s, agent) : await changes(s, agent);
-    return `\n\n[화면: ${mode === 'text' ? '본문' : mode === 'snapshot' ? '스냅샷' : '바뀐 부분'}]\n${body}`;
+    return `\n\n[page: ${mode}]\n${body}`;
   } catch (e) {
-    return `\n\n[화면 읽기 실패: ${(e as Error).message}]`;
+    return `\n\n[page read failed: ${(e as Error).message}]`;
   }
 }

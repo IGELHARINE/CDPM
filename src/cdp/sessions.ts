@@ -105,7 +105,7 @@ export class PageSession {
    */
   exclusive<T>(fn: () => Promise<T>): Promise<T> {
     const locked = () => withFileLock(paths.tabLock(this.slot, this.targetId), fn, TAB_LOCK_WAIT_MS,
-      '다른 Claude 세션이 이 탭을 2분 넘게 조작하고 있어요. 그 세션에 slot_send로 물어보거나 자기 탭(browser_tab_new)에서 하세요.');
+      'Another Claude session has been using this tab for over 2 min. Ask it via slot_send or use your own tab (browser_tab_new).');
     const run = this.chain.then(locked, locked);
     this.chain = run.then(() => undefined, () => undefined);
     return run;
@@ -317,12 +317,12 @@ export class PageSession {
   /** 붙을 때 탭이 아직 답하지 않음 (알림창이 떠 있거나 무거운 작업 중). 응답이 오면 자동으로 풀린다. */
   markUnresponsive() {
     this.pendingEnable = true;
-    this.dialog ??= { type: '응답 대기', message: '탭이 아직 응답하지 않아요 (알림창이 떠 있거나 무거운 작업 중)', at: new Date().toISOString() };
+    this.dialog ??= { type: 'unresponsive', message: 'Tab not responding yet (dialog open or busy)', at: new Date().toISOString() };
   }
 
   /** 붙을 때 보낸 Page.enable이 나중에라도 끝나면: 탭이 다시 움직인다는 신호 */
   enabledLater() {
-    if (this.dialog?.type === '응답 대기') this.dialog = undefined;
+    if (this.dialog?.type === 'unresponsive') this.dialog = undefined;
     if (this.pendingEnable) {
       this.pendingEnable = false;
       void this.network.enable();
@@ -332,8 +332,8 @@ export class PageSession {
   assertNoDialog() {
     if (this.dialog) {
       throw new CdpmError(
-        `이 탭에 ${this.dialog.type} 알림창이 떠 있어요: "${this.dialog.message}"\n` +
-        '내용을 보고 판단해서 browser_dialog로 직접 처리하세요 (확인 accept: true, 취소 false). 사용자가 시키지 않은 되돌릴 수 없는 일(결제·삭제 등)을 확정하는 창일 때만 사용자에게 물어보세요.',
+        `A ${this.dialog.type} dialog is open on this tab: "${this.dialog.message}"\n` +
+        'Read it and handle it yourself with browser_dialog (accept: true = OK, false = cancel). Ask the user only if it confirms something irreversible they did not request (payment, deletion, etc.).',
       );
     }
   }
@@ -415,7 +415,7 @@ export async function browserConnection(slot: number): Promise<CdpConnection> {
   const cached = browserConns.get(slot);
   if (cached && !cached.closed) return cached;
   const p = await probe(slot);
-  if (p.state !== 'chrome') throw new CdpmError(`${slot}번 Chrome이 떠 있지 않습니다 (포트 ${portOf(slot)}).`);
+  if (p.state !== 'chrome') throw new CdpmError(`Chrome is not running on slot ${slot} (port ${portOf(slot)}).`);
   const conn = await CdpConnection.connect(p.version.webSocketDebuggerUrl);
   conn.onClosed(() => browserConns.delete(slot));
   browserConns.set(slot, conn);
@@ -438,7 +438,7 @@ export async function pageSession(slot: number, targetId: string, wsUrl?: string
       const t = (await listPages(slot)).find((x) => x.id === targetId) ?? (await listFrameTargets(slot)).find((x) => x.id === targetId);
       url = t?.webSocketDebuggerUrl;
     }
-    if (!url) throw new CdpmError('탭을 찾을 수 없습니다 (닫혔을 수 있어요).');
+    if (!url) throw new CdpmError('Tab not found (it may have been closed).');
     const conn = await CdpConnection.connect(url);
     const session = new PageSession(slot, targetId, conn);
     conn.onClosed(() => pageSessions.delete(key));

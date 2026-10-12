@@ -91,7 +91,7 @@ export function formatAxTree(nodes: AXNode[], opts: SnapshotOptions = {}): Snaps
       if (role === 'Iframe' || role === 'iframe') {
         const sub = node.backendDOMNodeId !== undefined ? ctx.frames?.get(node.backendDOMNodeId) : undefined;
         const head = `${pad(depth)}- iframe${name ? ` ${quote(name)}` : ''}`;
-        if (sub === 'unsupported') return [`${head} (읽지 못함)`];
+        if (sub === 'unsupported') return [`${head} (unreadable)`];
         if (!sub) return [head];
         // 같은 프로세스 iframe은 요소 ID 공간이 같고, 다른 사이트 iframe은 자기 공간을 쓴다
         return [head, ...render(sub.nodes, depth + 1, sub.targetId

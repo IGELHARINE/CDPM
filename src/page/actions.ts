@@ -29,13 +29,13 @@ export function externalScheme(url: string): string | undefined {
 const CLIPBOARD_COMBOS = [/^(control|ctrl|meta|cmd)\+(c|x|v)$/i, /^(control|ctrl)\+insert$/i, /^shift\+(insert|delete)$/i];
 const IS_MAC = process.platform === 'darwin';
 
-export const DIALOG_NOTE = '내용을 보고 판단해서 browser_dialog로 직접 처리하세요 (확인 accept: true, 취소 false). 사용자가 시키지 않은 되돌릴 수 없는 일(결제·삭제 등)을 확정하는 창일 때만 사용자에게 물어보세요.';
+export const DIALOG_NOTE = 'Read it and handle it yourself with browser_dialog (accept: true = OK, false = cancel). Ask the user only if it confirms something irreversible they did not request (payment, deletion, etc.).';
 
 /** 행동 도중 페이지가 알림창을 띄움. 행동 자체는 이루어진 것이므로 오류가 아니라 결과로 알린다. */
 export class DialogInterrupt extends CdpmError {}
 
 /** 입력한 뒤 실제 값이 넣으려던 글자와 다를 때 결과에 붙는 표시 (이때는 제출하지 않는다) */
-export const VALUE_MISMATCH = '[주의] 입력한 뒤 값이 예상과 달라요';
+export const VALUE_MISMATCH = '[warning] Value differs from what was typed';
 
 // ---------- 에이전트 조작 동안에만: OS 창·인쇄 창 막기 ----------
 // 사람이 직접 누른 것은 평소처럼 떠야 하므로, CDPM이 조작하는 그 순간에만 켜고 끝나면 바로 푼다.
@@ -78,9 +78,9 @@ export async function guardAction<T>(s: PageSession, fn: () => Promise<T>): Prom
   // 클릭이 이미 안내했으면(같은 창) 다시 붙이지 않는다
   if (chooser && !(s.fileChooser && s.fileChooser.at >= started)) {
     s.fileChooser = { fs: s, backendNodeId: chooser.backendNodeId, multiple: chooser.mode === 'selectMultiple', at: Date.now() };
-    note += `\n파일 선택 창이 열리려 해서 사용자 화면에 띄우지 않았어요. browser_upload(files=[파일 경로${s.fileChooser.multiple ? ', 여러 개 가능' : ''}])로 바로 넣으세요.`;
+    note += `\nA file chooser tried to open; it was not shown to the user. Use browser_upload(files=[path${s.fileChooser.multiple ? ', ...' : ''}]).`;
   }
-  if (printed) note += '\n페이지가 인쇄 창을 열려고 해서 막았어요 (탭이 멈추지 않게). PDF로 저장하려면 browser_pdf를 쓰세요.';
+  if (printed) note += '\nBlocked the page from opening a print dialog (would freeze the tab). Use browser_pdf to save as PDF.';
   return { value, note };
 }
 
@@ -91,7 +91,7 @@ export class PausedInterrupt extends CdpmError {}
 const CHANGES_PAGE = /^(Input\.(dispatch|insertText)|Page\.(navigate|reload|navigateToHistoryEntry)$|DOM\.(setFileInputFiles|scrollIntoViewIfNeeded)$)/;
 
 function stopIfPaused(s: PageSession) {
-  if (isPaused(s.slot)) throw new PausedInterrupt('사용자가 슬롯을 멈춰서 하던 조작을 그 자리에서 멈췄어요 (이미 보낸 입력까지만 반영됐어요).');
+  if (isPaused(s.slot)) throw new PausedInterrupt('The user paused this slot, so the action stopped midway (only input already sent was applied).');
 }
 
 async function send<T = any>(s: PageSession, method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
@@ -99,7 +99,7 @@ async function send<T = any>(s: PageSession, method: string, params: Record<stri
   const r = await s.sendUnlessDialog<T>(method, params, timeoutMs);
   if (r === 'dialog') {
     const d = s.dialog;
-    throw new DialogInterrupt(`${d ? `${d.type} 알림창이 떴어요: "${d.message}"\n` : '알림창이 떴어요.\n'}${DIALOG_NOTE}`);
+    throw new DialogInterrupt(`${d ? `A ${d.type} dialog opened: "${d.message}"\n` : 'A dialog opened.\n'}${DIALOG_NOTE}`);
   }
   return r;
 }
@@ -111,19 +111,19 @@ export async function handleDialog(s: PageSession, accept: boolean, text?: strin
   try {
     await s.conn.send('Page.handleJavaScriptDialog', { accept, ...(text !== undefined ? { promptText: text } : {}) }, 5000);
   } catch (e) {
-    if (/no dialog/i.test(String((e as Error)?.message))) throw new CdpmError('이 탭에는 떠 있는 알림창이 없어요.');
+    if (/no dialog/i.test(String((e as Error)?.message))) throw new CdpmError('No dialog is open on this tab.');
     throw e;
   }
   await closed;
-  const kind = d && d.type !== '응답 대기' ? `${d.type} 알림창` : '알림창';
-  const what = accept ? (d?.type === 'beforeunload' ? '확인(페이지 떠나기)' : '확인') : (d?.type === 'beforeunload' ? '취소(페이지에 머물기)' : '취소');
-  return `${kind}을 ${what}했어요${d?.message ? `: "${d.message.slice(0, 120)}"` : ''}${accept && text !== undefined ? ` (입력: "${text.slice(0, 60)}")` : ''}.`;
+  const kind = d && d.type !== 'unresponsive' ? `${d.type} dialog` : 'dialog';
+  const what = accept ? (d?.type === 'beforeunload' ? 'Accepted (left page)' : 'Accepted') : (d?.type === 'beforeunload' ? 'Dismissed (stayed on page)' : 'Dismissed');
+  return `${what} ${kind}${d?.message ? `: "${d.message.slice(0, 120)}"` : ''}${accept && text !== undefined ? ` (input: "${text.slice(0, 60)}")` : ''}.`;
 }
 
 function targetOf(s: PageSession, agent: string, ref: string): RefTarget {
   const t = s.refsFor(agent).get(ref.trim());
   if (!t) {
-    throw new CdpmError(`모르는 ref예요: "${ref}". 페이지가 바뀌었거나, 다른 탭의 ref이거나, 이 에이전트(${agent})가 이 탭에서 찍은 스냅샷이 없어요. browser_snapshot을 다시 찍으세요.`);
+    throw new CdpmError(`Unknown ref: "${ref}". The page changed, the ref is from another tab, or this agent (${agent}) has no snapshot of this tab. Take a new browser_snapshot.`);
   }
   return t;
 }
@@ -147,7 +147,7 @@ async function locate(s: PageSession, t: RefTarget): Promise<Located> {
     ({ model: { content } } = await send<{ model: { content: number[] } }>(parent.fs, 'DOM.getBoxModel', { backendNodeId: t.owner.backendNodeId }));
   } catch (e) {
     if (e instanceof DialogInterrupt) throw e;
-    throw new CdpmError('iframe의 위치를 구할 수 없어요 (iframe이 숨겨졌거나 사라졌을 수 있어요). browser_snapshot을 다시 찍으세요.');
+    throw new CdpmError('Cannot locate the iframe (it may be hidden or gone). Take a new browser_snapshot.');
   }
   const fs = await pageSession(s.slot, t.targetId);
   return { fs, dx: parent.dx + content[0], dy: parent.dy + content[1] };
@@ -162,7 +162,7 @@ async function objectOf(s: PageSession, t: RefTarget): Promise<string> {
     });
   } catch (e) {
     if (e instanceof DialogInterrupt) throw e;
-    throw new CdpmError('요소가 페이지에서 사라졌어요. browser_snapshot을 다시 찍으세요.');
+    throw new CdpmError('Element is gone from the page. Take a new browser_snapshot.');
   }
 }
 
@@ -170,7 +170,7 @@ async function callOn<T = any>(s: PageSession, objectId: string, fn: string, arg
   const r = await send<{ result: { value?: T }; exceptionDetails?: { text: string; exception?: { description?: string } } }>(s, 'Runtime.callFunctionOn', {
     objectId, functionDeclaration: fn, arguments: args, returnByValue: true,
   });
-  if (r.exceptionDetails) throw new CdpmError(`페이지 함수 실행 오류: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
+  if (r.exceptionDetails) throw new CdpmError(`Page function error: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
   return r.result.value as T;
 }
 
@@ -191,12 +191,12 @@ const release = async (s: PageSession) => {
 /** 누르면 선택 창(달력·시계·색)이 뜨는 입력칸. 클릭하지 않고 browser_type으로 값을 넣는다 */
 const DATE_LIKE = ['date', 'time', 'datetime-local', 'month', 'week', 'color'];
 const DATE_FORMAT: Record<string, string> = {
-  date: 'YYYY-MM-DD (예: 2026-10-08)',
-  time: 'HH:MM 24시간 (예: 19:30)',
-  'datetime-local': 'YYYY-MM-DDTHH:MM (예: 2026-10-08T19:30)',
-  month: 'YYYY-MM (예: 2026-10)',
-  week: 'YYYY-Www (예: 2026-W41)',
-  color: '#RRGGBB (예: #ff0000)',
+  date: 'YYYY-MM-DD (e.g. 2026-10-08)',
+  time: 'HH:MM 24h (e.g. 19:30)',
+  'datetime-local': 'YYYY-MM-DDTHH:MM (e.g. 2026-10-08T19:30)',
+  month: 'YYYY-MM (e.g. 2026-10)',
+  week: 'YYYY-Www (e.g. 2026-W41)',
+  color: '#RRGGBB (e.g. #ff0000)',
 };
 
 interface ElementInfo {
@@ -232,7 +232,7 @@ const DESCRIBE = `function () {
 async function describe(s: PageSession, objectId: string, ref?: string): Promise<ElementInfo> {
   const info = await callOn<ElementInfo>(s, objectId, DESCRIBE);
   if (!info.connected) {
-    throw new CdpmError(`오래된 ref예요${ref ? `: "${ref}"` : ''}. 그 요소는 페이지가 바뀌면서 사라졌어요 (새 요소로 교체됨). browser_snapshot을 다시 찍으세요.`);
+    throw new CdpmError(`Stale ref${ref ? `: "${ref}"` : ''}. The element was replaced when the page changed. Take a new browser_snapshot.`);
   }
   return info;
 }
@@ -248,10 +248,10 @@ async function clickPoint(s: PageSession, backendNodeId: number): Promise<{ x: n
     ({ quads } = await send<{ quads: number[][] }>(s, 'DOM.getContentQuads', { backendNodeId }));
   } catch (e) {
     if (e instanceof DialogInterrupt) throw e;
-    throw new CdpmError('요소의 위치를 구할 수 없어요 (화면에 그려지지 않는 요소일 수 있어요). browser_snapshot을 다시 찍어 보세요.');
+    throw new CdpmError('Cannot locate the element (it may not be rendered). Try a new browser_snapshot.');
   }
   const q = quads.find((quad) => area(quad) > 1);
-  if (!q) throw new CdpmError('요소가 화면에서 크기가 0이에요 (숨겨져 있을 수 있어요).');
+  if (!q) throw new CdpmError('Element has zero size on screen (it may be hidden).');
   return { x: (q[0] + q[2] + q[4] + q[6]) / 4, y: (q[1] + q[3] + q[5] + q[7]) / 4 };
 }
 
@@ -298,7 +298,7 @@ async function coveringElement(s: PageSession, t: RefTarget, targetObj: string, 
     while (real && real.shadowRoot) { const inner = real.shadowRoot.elementFromPoint(x, y); if (!inner || inner === real) break; real = inner; }
     if (real && inside(real)) return null;
     const el = hit.nodeType === 1 ? hit : hit.parentElement;
-    if (!el) return { blocked: '알 수 없는 요소' };
+    if (!el) return { blocked: 'unknown element' };
     const label = (el.getAttribute('aria-label') || el.innerText || el.getAttribute('alt') || '').trim().slice(0, 40);
     const id = el.id ? '#' + el.id : '';
     const cls = typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\\s+/).slice(0, 2).join('.') : '';
@@ -332,10 +332,10 @@ async function mouseClick(s: PageSession, x: number, y: number, clickCount: numb
 type LoadState = 'complete' | 'interactive' | 'timeout' | 'download';
 
 const LOAD_NOTE: Record<LoadState, string> = {
-  complete: '로딩 완료',
-  interactive: '본문 로딩 완료, 네트워크도 조용해짐 (load 이벤트 전)',
-  timeout: '아직 로딩 중이에요 (네트워크가 느릴 수 있어요). 필요하면 browser_wait로 더 기다리세요',
-  download: '파일 다운로드로 바뀌어서 페이지는 그대로예요',
+  complete: 'loaded',
+  interactive: 'DOM loaded, network idle (before load event)',
+  timeout: 'still loading (slow network?). Use browser_wait to wait more if needed',
+  download: 'became a file download; page unchanged',
 };
 
 /** 행동 뒤 페이지 이동이 시작되면 로딩을 기다린다. 이동이 없으면 거의 바로 돌아온다. */
@@ -368,7 +368,7 @@ async function settleAfter(s: PageSession, action: () => Promise<void>): Promise
   void wake;
   if (!started) return '';
   const state = await waitLoad(s, !committed);
-  return `\n(페이지 이동: ${LOAD_NOTE[state]})`;
+  return `\n(navigated: ${LOAD_NOTE[state]})`;
 }
 
 /**
@@ -433,24 +433,24 @@ export async function click(s: PageSession, agent: string, ref: string, double =
     const obj = await objectOf(fs, t);
     const info = await describe(fs, obj, ref);
     if (info.select) {
-      throw new CdpmError(`클릭하지 않았어요: [${ref}]는 드롭다운(<select>)이라 누르면 사용자 화면에 목록 창이 떠요. browser_select로 항목을 고르세요.`);
+      throw new CdpmError(`Not clicked: [${ref}] is a dropdown (<select>); clicking opens a popup on the user's screen. Use browser_select.`);
     }
     if (info.dateType) {
-      throw new CdpmError(`클릭하지 않았어요: [${ref}]는 ${info.dateType} 입력칸이라 누르면 사용자 화면에 선택 창(달력·시계·색)이 떠요. browser_type으로 값을 넣으세요 (형식: ${DATE_FORMAT[info.dateType] ?? info.dateType}).`);
+      throw new CdpmError(`Not clicked: [${ref}] is a ${info.dateType} input; clicking opens a picker on the user's screen. Use browser_type (format: ${DATE_FORMAT[info.dateType] ?? info.dateType}).`);
     }
     const href = await callOn<string>(fs, obj, 'function () { const a = this.closest && this.closest("a[href]"); return a ? a.href : ""; }');
     const ext = href ? externalScheme(href) : undefined;
     if (ext) {
-      throw new CdpmError(`클릭하지 않았어요: [${ref}]는 ${ext} 주소(${href.slice(0, 80)})라 누르면 사용자 PC의 다른 프로그램(메일·전화·앱 등)이 실행돼요.`);
+      throw new CdpmError(`Not clicked: [${ref}] is a ${ext} link (${href.slice(0, 80)}); clicking would launch another program on the user's PC (mail, phone, app, etc.).`);
     }
     const visible = (await s.visibility()) === 'visible';
     const local = await clickPoint(fs, t.backendNodeId);
     const x = local.x + dx, y = local.y + dy;
     const cover = await coveringElement(fs, t, obj, local.x, local.y);
-    if (cover && 'blocked' in cover) throw new CdpmError(`클릭하지 않았어요: ${cover.blocked}이(가) [${ref}]를 가리고 있어요. 팝업을 닫거나 스크롤한 뒤 다시 시도하세요.`);
+    if (cover && 'blocked' in cover) throw new CdpmError(`Not clicked: ${cover.blocked} is covering [${ref}]. Close the popup or scroll, then retry.`);
     const overlayExt = cover && cover.href ? externalScheme(cover.href) : undefined;
     if (overlayExt) {
-      throw new CdpmError(`클릭하지 않았어요: [${ref}]를 덮은 링크가 ${overlayExt} 주소(${cover!.href.slice(0, 80)})라 누르면 사용자 PC의 다른 프로그램이 실행돼요.`);
+      throw new CdpmError(`Not clicked: the link covering [${ref}] is a ${overlayExt} link (${cover!.href.slice(0, 80)}); clicking would launch another program on the user's PC.`);
     }
     // 이 클릭이 파일 선택 창을 열면(파일 칸·"첨부" 버튼 등) OS 창을 띄우지 않고 가로챈다 (CDPM이 누르는 동안만. 사람이 누르면 평소대로 뜸)
     let chooser: { backendNodeId: number; mode: string } | undefined;
@@ -467,7 +467,7 @@ export async function click(s: PageSession, agent: string, ref: string, double =
     if (chooser) {
       s.fileChooser = { fs, backendNodeId: chooser.backendNodeId, multiple: chooser.mode === 'selectMultiple', at: Date.now() };
       note += `
-파일 선택 창이 열리려 해서 사용자 화면에 띄우지 않고 대기 중이에요. browser_upload(files=[파일 경로${s.fileChooser.multiple ? ', 여러 개 가능' : ''}])로 바로 넣으세요.`;
+A file chooser tried to open; it was held back from the user's screen. Use browser_upload(files=[path${s.fileChooser.multiple ? ', ...' : ''}]).`;
     }
     let extra = '';
     if (!note && !s.dialog) {
@@ -481,9 +481,9 @@ export async function click(s: PageSession, agent: string, ref: string, double =
         const label = (bad.labels && bad.labels[0] && bad.labels[0].innerText.trim()) || bad.name || bad.id || bad.type;
         return label + ': ' + bad.validationMessage;
       }`).catch(() => '');
-      if (invalid) extra = `\n[주의] 폼이 제출되지 않았어요 (페이지 검증에 걸림) — ${invalid}`;
+      if (invalid) extra = `\n[warning] Form not submitted (failed page validation) — ${invalid}`;
     }
-    return `${double ? '더블클릭' : '클릭'}했어요: [${ref}]${note}${extra}${downloadNote(s)}`;
+    return `${double ? 'Double-clicked' : 'Clicked'} [${ref}]${note}${extra}${downloadNote(s)}`;
   } finally {
     await release(fs);
   }
@@ -511,25 +511,25 @@ async function pressCombo(s: PageSession, combo: KeyCombo) {
 async function humanFocusNote(s: PageSession): Promise<string> {
   if (s.isEmulating) return ''; // 숨은 탭을 그리는 중이면 hasFocus가 가짜로 true
   const r = await s.evaluate<boolean>('document.hasFocus()', { timeoutMs: 800 }).catch(() => undefined);
-  return r?.value ? '\n[주의] 이 탭은 지금 사람이 쓰고 있는 창일 수 있어요 (Chrome 창이 맨 앞이고 이 탭이 열려 있음). 사람이 입력 중이면 글자가 섞일 수 있어요.' : '';
+  return r?.value ? '\n[warning] A person may be using this tab now (Chrome window is in front with this tab open). Their typing could mix with yours.' : '';
 }
 
 export async function pressKey(s: PageSession, key: string): Promise<string> {
   await s.ensureNoDialog();
   if (CLIPBOARD_COMBOS.some((re) => re.test(key.replace(/\s+/g, '')))) {
-    throw new CdpmError(`"${key}"는 보내지 않았어요: 복사·붙여넣기는 사용자 PC의 클립보드를 덮어쓰거나 읽어요. 글자는 browser_type, 내용 확인은 browser_text를 쓰세요.`);
+    throw new CdpmError(`Did not send "${key}": copy/paste reads or overwrites the user's clipboard. Use browser_type to enter text and browser_text to read it.`);
   }
   const combo = parseCombo(key);
-  if (!combo) throw new CdpmError(`알 수 없는 키: "${key}". 예: Enter, Tab, Escape, ArrowDown, Control+A. 지원 키: ${KNOWN_KEYS.join(', ')}, 글자 한 개`);
+  if (!combo) throw new CdpmError(`Unknown key: "${key}". E.g. Enter, Tab, Escape, ArrowDown, Control+A. Supported: ${KNOWN_KEYS.join(', ')}, or a single character`);
   const human = await humanFocusNote(s);
   const note = await settleAfter(s, () => pressCombo(s, combo));
-  return `키를 눌렀어요: ${key}${note}${human}`;
+  return `Pressed ${key}${note}${human}`;
 }
 
 /** 날짜·시간 입력칸: 칸별 키 입력은 로케일마다 달라 불안정하므로 값을 직접 넣고 input/change 이벤트를 낸다. */
 async function setDateLike(s: PageSession, obj: string, info: ElementInfo, text: string, ref: string): Promise<string> {
   const target = info.inDateHost ? await callOnObject(s, obj, 'function () { return this.getRootNode().host; }') : obj;
-  if (!target) throw new CdpmError(`[${ref}] 날짜·시간·색 입력칸을 찾지 못했어요.`);
+  if (!target) throw new CdpmError(`[${ref}]: date/time/color input not found.`);
   // 형식이 틀리면 브라우저가 값을 비워 버리므로, 먼저 넣어 보고 틀리면 원래 값으로 되돌린다. 이벤트는 맞을 때만 낸다.
   const r = await callOn<{ ok: boolean; prev: string }>(s, target, `function (v) {
     const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
@@ -541,9 +541,9 @@ async function setDateLike(s: PageSession, obj: string, info: ElementInfo, text:
     return { ok: true, prev };
   }`, [{ value: text }]);
   if (!r.ok) {
-    throw new CdpmError(`[${ref}]는 ${info.dateType} 입력칸이에요. 형식이 맞지 않아 넣지 않았어요 (원래 값 ${JSON.stringify(r.prev)} 유지). 형식: ${DATE_FORMAT[info.dateType] ?? info.dateType}`);
+    throw new CdpmError(`[${ref}] is a ${info.dateType} input. Wrong format, not set (kept ${JSON.stringify(r.prev)}). Format: ${DATE_FORMAT[info.dateType] ?? info.dateType}`);
   }
-  return `입력했어요: [${ref}] ${JSON.stringify(text)} (${info.dateType} 입력칸에 값을 직접 넣음)`;
+  return `Typed [${ref}] ${JSON.stringify(text)} (value set directly on ${info.dateType} input)`;
 }
 
 /** 글자마다 진짜 키 이벤트(keydown → keypress → input → keyup)를 보낸다. 사람이 친 것과 같은 이벤트 순서. */
@@ -570,8 +570,8 @@ export async function type(s: PageSession, agent: string, ref: string, text: str
       const msg = await setDateLike(fs, obj, info, text, ref);
       return submit ? msg + (await settleAfter(s, () => pressCombo(s, parseCombo('Enter')!))) : msg;
     }
-    if (info.select) throw new CdpmError(`[${ref}]는 드롭다운(<select>)이에요. browser_select로 항목을 고르세요.`);
-    if (info.fileInput) throw new CdpmError(`[${ref}]는 파일 선택 칸이에요. 파일은 browser_upload(ref="${ref}", files=[파일 경로])로 넣으세요.`);
+    if (info.select) throw new CdpmError(`[${ref}] is a dropdown (<select>). Use browser_select.`);
+    if (info.fileInput) throw new CdpmError(`[${ref}] is a file input. Use browser_upload(ref="${ref}", files=[path]).`);
 
     await send(fs, 'DOM.scrollIntoViewIfNeeded', { backendNodeId: t.backendNodeId }).catch((e) => {
       if (e instanceof DialogInterrupt) throw e;
@@ -601,18 +601,18 @@ export async function type(s: PageSession, agent: string, ref: string, text: str
     let warn = '';
     if (info.editable !== 'none' && text) {
       const now = await callOn<string>(fs, obj, `function () { return ('value' in this && typeof this.value === 'string') ? this.value : (this.innerText || ''); }`);
-      if (!now.includes(text)) warn = `\n${VALUE_MISMATCH} (현재 값: ${JSON.stringify(now.slice(0, 100))}). 사이트가 입력을 막거나 형식을 바꿨을 수 있어요.`;
+      if (!now.includes(text)) warn = `\n${VALUE_MISMATCH} (now: ${JSON.stringify(now.slice(0, 100))}). The site may block or reformat input.`;
     } else if (info.editable === 'none') {
-      warn = `\n[주의] [${ref}]는 입력칸이 아니라서(${info.tag}) 포커스된 곳에 글자를 보냈어요. 결과를 스냅샷으로 확인하세요.`;
+      warn = `\n[warning] [${ref}] is not an input (${info.tag}); text was sent to the focused element. Check with a snapshot.`;
     }
     let note = '';
     const human = await humanFocusNote(s);
     // 값이 다르면 잘못된 내용이 제출될 수 있으므로 Enter를 누르지 않는다
     const mismatch = warn.includes(VALUE_MISMATCH);
-    if (submit && mismatch) note = '\n값이 달라서 제출(Enter)은 하지 않았어요. 값을 확인한 뒤 다시 입력하거나 browser_press_key로 제출하세요.';
+    if (submit && mismatch) note = '\nNot submitted (Enter) because the value differs. Check it, then retype or submit with browser_press_key.';
     else if (submit) note = await settleAfter(s, () => pressCombo(s, parseCombo('Enter')!));
     warn += human;
-    return `입력했어요: [${ref}] ${JSON.stringify(text)}${clear ? ' (기존 내용 지움)' : ''}${fast ? ' (빠른 입력: 키 이벤트 없이 한 번에)' : ''}${submit && !mismatch ? ' + Enter' : ''}${warn}${note}`;
+    return `Typed [${ref}] ${JSON.stringify(text)}${clear ? ' (cleared first)' : ''}${fast ? ' (fast: inserted at once, no key events)' : ''}${submit && !mismatch ? ' + Enter' : ''}${warn}${note}`;
   } finally {
     await release(fs);
   }
@@ -635,14 +635,14 @@ export async function select(s: PageSession, agent: string, ref: string, option:
       const norm = (x) => x.replace(/\\s+/g, ' ').trim();
       const o = opts.find((o) => o.value === want) || opts.find((o) => norm(o.text) === norm(want)) ||
         opts.find((o) => norm(o.text).includes(norm(want)));
-      if (!o) return { ok: false, options: opts.slice(0, 40).map((o) => norm(o.text) + (o.value !== norm(o.text) ? ' (값: ' + o.value + ')' : '')) };
+      if (!o) return { ok: false, options: opts.slice(0, 40).map((o) => norm(o.text) + (o.value !== norm(o.text) ? ' (value: ' + o.value + ')' : '')) };
       if (o.disabled) return { ok: false, error: 'disabled', label: norm(o.text) };
       return { ok: true, index: o.index, label: norm(o.text), value: o.value, multiple: sel.multiple };
     }`, [{ value: option }]);
     if (!find.ok) {
-      if (find.error === 'notselect') throw new CdpmError(`[${ref}]는 <select> 드롭다운이 아니에요. 사이트가 직접 만든 목록이면 browser_click으로 열고 항목을 클릭하세요.`);
-      if (find.error === 'disabled') throw new CdpmError(`"${find.label}" 항목은 비활성이라 고를 수 없어요.`);
-      throw new CdpmError(`"${option}"에 맞는 항목이 없어요. 고를 수 있는 항목:\n${(find.options ?? []).map((o) => `  - ${o}`).join('\n')}`);
+      if (find.error === 'notselect') throw new CdpmError(`[${ref}] is not a <select>. For a custom list, open it with browser_click and click the item.`);
+      if (find.error === 'disabled') throw new CdpmError(`Option "${find.label}" is disabled.`);
+      throw new CdpmError(`No option matches "${option}". Available:\n${(find.options ?? []).map((o) => `  - ${o}`).join('\n')}`);
     }
     await send(fs, 'DOM.focus', { backendNodeId: t.backendNodeId });
     const current = () => callOn<number>(fs, obj, `function () { const sel = this.tagName === 'SELECT' ? this : this.closest('select'); return sel.selectedIndex; }`);
@@ -664,7 +664,7 @@ export async function select(s: PageSession, agent: string, ref: string, option:
       if (next === idx) break; // 더 움직이지 않음 (끝이거나 막힘)
       idx = next;
     }
-    if (idx === find.index) return `골랐어요: [${ref}] "${find.label}" (값: ${find.value})`;
+    if (idx === find.index) return `Selected [${ref}] "${find.label}" (value: ${find.value})`;
     // 키로 고르지 못한 경우(맥에서 앞글자가 같은 항목이 먼저 있을 때 등): 값을 직접 넣고 input/change 이벤트를 낸다 (이 이벤트는 isTrusted=false).
     const forced = await callOn<number>(fs, obj, `function (i) {
       const sel = this.tagName === 'SELECT' ? this : this.closest('select');
@@ -673,8 +673,8 @@ export async function select(s: PageSession, agent: string, ref: string, option:
       sel.dispatchEvent(new Event('change', { bubbles: true }));
       return sel.selectedIndex;
     }`, [{ value: find.index }]);
-    if (forced !== find.index) throw new CdpmError(`"${find.label}" 항목으로 옮기지 못했어요. 페이지가 선택을 막고 있을 수 있어요.`);
-    return `골랐어요: [${ref}] "${find.label}" (값: ${find.value}) — 키로 고르지 못해 값을 직접 넣었어요 (change 이벤트 isTrusted=false)`;
+    if (forced !== find.index) throw new CdpmError(`Could not select "${find.label}". The page may be blocking it.`);
+    return `Selected [${ref}] "${find.label}" (value: ${find.value}) — keys failed, value set directly (change event isTrusted=false)`;
   } finally {
     await release(fs);
   }
@@ -700,21 +700,21 @@ export async function scroll(s: PageSession, agent: string, ref: string | undefi
     const t = targetOf(s, agent, ref);
     const { fs } = await locate(s, t);
     await send(fs, 'DOM.scrollIntoViewIfNeeded', { backendNodeId: t.backendNodeId });
-    return `[${ref}]가 보이도록 스크롤했어요.`;
+    return `Scrolled [${ref}] into view.`;
   }
   const amount = dy ?? 600;
   // 휠 이벤트는 비동기로 늦게 적용돼 결과를 추측해야 한다 → 스크립트로 정확한 양을 즉시 움직이고 위치를 바로 확정한다.
   const info = async (move: number | null) => (await s.evaluate<{ top: number; max: number; inner: boolean }>(SCROLL_FN(move), { timeoutMs: 10_000 })).value!;
   const before = await info(null);
   const after = await info(amount);
-  const where = `${after.inner ? '안쪽 스크롤 영역 ' : ''}위치 ${before.top} → ${after.top} / 최대 ${after.max}`;
+  const where = `${after.inner ? 'inner scroller ' : ''}pos ${before.top} → ${after.top} / max ${after.max}`;
   const moved = Math.abs(after.top - before.top);
   if (!moved) {
-    const edge = amount > 0 ? '이미 맨 아래' : '이미 맨 위';
-    return `더 스크롤할 수 없어요 (${edge}, ${where}).`;
+    const edge = amount > 0 ? 'at bottom' : 'at top';
+    return `Can't scroll further (${edge}, ${where}).`;
   }
-  const partial = moved < Math.abs(amount) - 1 ? ` (요청 ${Math.abs(amount)}px 중 끝에 닿아 ${moved}px만)` : '';
-  return `${amount > 0 ? '아래로' : '위로'} ${moved}px 스크롤했어요${partial} (${where}).`;
+  const partial = moved < Math.abs(amount) - 1 ? ` (hit the end: ${moved} of ${Math.abs(amount)}px)` : '';
+  return `Scrolled ${amount > 0 ? 'down' : 'up'} ${moved}px${partial} (${where}).`;
 }
 
 export async function navigate(s: PageSession, rawUrl: string): Promise<string> {
@@ -723,7 +723,7 @@ export async function navigate(s: PageSession, rawUrl: string): Promise<string> 
   // charset 없는 data:text/html은 한글이 깨진다 → utf-8로 해석하게 한다
   if (/^data:text\/html,/i.test(url)) url = url.replace(/^data:text\/html,/i, 'data:text/html;charset=utf-8,');
   const ext = externalScheme(url);
-  if (ext) throw new CdpmError(`이동하지 않았어요: ${ext} 주소는 브라우저가 아니라 사용자 PC의 다른 프로그램을 실행해요.`);
+  if (ext) throw new CdpmError(`Not navigated: ${ext} URLs launch another program on the user's PC, not the browser.`);
   // 이전 문서의 'complete'를 새 문서로 착각하지 않도록, 새 문서가 들어오는 이벤트를 먼저 기다린다.
   const committed = s.conn.waitFor('Page.frameNavigated', (p) => !p.frame.parentId, 30_000);
   let r: { errorText?: string; loaderId?: string };
@@ -731,19 +731,19 @@ export async function navigate(s: PageSession, rawUrl: string): Promise<string> 
     // Page.navigate는 서버가 첫 응답을 줄 때까지 돌아오지 않는다 → 느린 네트워크를 넉넉히 기다린다.
     r = await send<{ errorText?: string; loaderId?: string }>(s, 'Page.navigate', { url }, 60_000);
   } catch (e) {
-    if (e instanceof CdpTimeoutError) return `이동을 시작했지만 60초 동안 서버 응답이 없어요: ${decodeUrl(url)}\n(네트워크가 느리거나 서버가 응답하지 않는 중이에요. browser_wait나 browser_snapshot으로 나중에 확인하세요)`;
+    if (e instanceof CdpTimeoutError) return `Navigation started but no server response for 60s: ${decodeUrl(url)}\n(slow network or unresponsive server. Check later with browser_wait or browser_snapshot)`;
     throw e;
   }
   if (r.errorText) {
     await new Promise((res) => setImmediate(res));
     const dl = downloadNote(s);
-    if (dl) return `이동 대신 파일 내려받기가 시작됐어요 (페이지가 아니라 파일 응답이에요).${dl}`;
-    throw new CdpmError(`이동 실패 (${decodeUrl(url)}): ${r.errorText}${/TIMED_OUT|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|CONNECTION/.test(r.errorText) ? ' — 인터넷 연결이나 주소를 확인하세요' : ''}`);
+    if (dl) return `A file download started instead of navigation (response was a file).${dl}`;
+    throw new CdpmError(`Navigation failed (${decodeUrl(url)}): ${r.errorText}${/TIMED_OUT|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|CONNECTION/.test(r.errorText) ? ' — check the connection or URL' : ''}`);
   }
   // loaderId가 없으면 같은 문서 안 이동(#해시)이라 새로 로딩하지 않는다.
-  if (!r.loaderId) return `이동했어요: ${decodeUrl(url)} (같은 페이지 안 이동)`;
+  if (!r.loaderId) return `Navigated to ${decodeUrl(url)} (same-document)`;
   const state = (await committed) ? await waitLoad(s, false) : 'timeout';
-  return `이동했어요: ${decodeUrl(url)}${state === 'complete' ? '' : `\n(${LOAD_NOTE[state]})`}`;
+  return `Navigated to ${decodeUrl(url)}${state === 'complete' ? '' : `\n(${LOAD_NOTE[state]})`}`;
 }
 
 export async function back(s: PageSession): Promise<string> {
@@ -756,22 +756,22 @@ export async function forward(s: PageSession): Promise<string> {
 
 async function history(s: PageSession, delta: -1 | 1): Promise<string> {
   await s.ensureNoDialog();
-  const word = delta < 0 ? '뒤로' : '앞으로';
+  const word = delta < 0 ? 'back' : 'forward';
   const h = await send<{ currentIndex: number; entries: { id: number; url: string }[] }>(s, 'Page.getNavigationHistory');
   const entry = h.entries[h.currentIndex + delta];
-  if (!entry) throw new CdpmError(`${word} 갈 페이지가 없어요.`);
+  if (!entry) throw new CdpmError(`No page to go ${word} to.`);
   const cur = h.entries[h.currentIndex];
   const sameDoc = cur.url.split('#')[0] === entry.url.split('#')[0];
   if (sameDoc) {
     await send(s, 'Page.navigateToHistoryEntry', { entryId: entry.id });
     await sleep(100);
-    return `${word} 갔어요: ${decodeUrl(entry.url)} (같은 페이지 안 이동)`;
+    return `Went ${word}: ${decodeUrl(entry.url)} (same-document)`;
   }
   const committed = s.conn.waitFor('Page.frameNavigated', (p) => !p.frame.parentId, 30_000);
   await send(s, 'Page.navigateToHistoryEntry', { entryId: entry.id });
   const nav = await committed;
   const state = nav ? await waitLoad(s, false) : 'timeout';
-  return `${word} 갔어요: ${decodeUrl(entry.url)}${state === 'complete' ? '' : `
+  return `Went ${word}: ${decodeUrl(entry.url)}${state === 'complete' ? '' : `
 (${LOAD_NOTE[state]})`}`;
 }
 
@@ -782,7 +782,7 @@ export async function reload(s: PageSession, ignoreCache = false): Promise<strin
   await send(s, 'Page.reload', { ignoreCache });
   const nav = await committed;
   const state = nav ? await waitLoad(s, false) : 'timeout';
-  return `새로고침했어요${ignoreCache ? ' (캐시 무시)' : ''}${state === 'complete' ? '' : `
+  return `Reloaded${ignoreCache ? ' (cache bypassed)' : ''}${state === 'complete' ? '' : `
 (${LOAD_NOTE[state]})`}${downloadNote(s)}`;
 }
 
@@ -795,7 +795,7 @@ export async function hover(s: PageSession, agent: string, ref: string): Promise
   await send(s, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x + dx, y: p.y + dy, button: 'none' });
   // 메뉴가 그려질 시간: 다음 프레임 두 번
   await fs.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))', { awaitPromise: true, timeoutMs: 3000 }).catch(() => undefined);
-  return `마우스를 올렸어요: [${ref}]`;
+  return `Hovered [${ref}]`;
 }
 
 /**
@@ -805,7 +805,7 @@ export async function hover(s: PageSession, agent: string, ref: string): Promise
  */
 export async function drag(s: PageSession, agent: string, fromRef: string, toRef: string | undefined, dx: number | undefined, dy: number | undefined, toText?: string): Promise<string> {
   await s.ensureNoDialog();
-  if (!toRef && !toText && dx === undefined && dy === undefined) throw new CdpmError('놓을 곳을 주세요: to(요소 ref), to_text(놓을 곳의 글자), 또는 dx·dy(픽셀).');
+  if (!toRef && !toText && dx === undefined && dy === undefined) throw new CdpmError('Give a drop target: to (ref), to_text (text at target), or dx/dy (pixels).');
   const from = targetOf(s, agent, fromRef);
   const a = await locate(s, from);
   const startPoint = async () => { const p = await clickPoint(a.fs, from.backendNodeId); return { x: p.x + a.dx, y: p.y + a.dy }; };
@@ -837,7 +837,7 @@ export async function drag(s: PageSession, agent: string, fromRef: string, toRef
         }
         return best && { x: best.left + best.width / 2, y: best.top + best.height / 2 };
       })()`, { timeoutMs: 5000 });
-      if (!r.value) throw new CdpmError(`"${toText}"이(가) 들어간 놓을 곳을 화면에서 찾지 못했어요 (화면 밖이면 browser_scroll로 둘 다 보이게 한 뒤 다시).`);
+      if (!r.value) throw new CdpmError(`No drop target containing "${toText}" found on screen (if off-screen, browser_scroll so both are visible, then retry).`);
       return r.value;
     }
     return { x: start.x + (dx ?? 0), y: start.y + (dy ?? 0) };
@@ -864,7 +864,7 @@ export async function drag(s: PageSession, agent: string, fromRef: string, toRef
     await s.send('Input.setInterceptDrags', { enabled: false }, 3000).catch(() => undefined);
   }
   await s.evaluate('0', { timeoutMs: 5000 }).catch(() => undefined);
-  return `끌어 놓았어요: [${fromRef}] → ${toRef ? `[${toRef}]` : toText ? `"${toText}"` : `${dx ?? 0}, ${dy ?? 0}픽셀`}${dragData ? ' (HTML 드래그)' : ''}`;
+  return `Dragged [${fromRef}] → ${toRef ? `[${toRef}]` : toText ? `"${toText}"` : `${dx ?? 0}, ${dy ?? 0}px`}${dragData ? ' (HTML drag)' : ''}`;
 }
 
 /** 지금 페이지를 PDF로 저장한다. 경로를 안 주면 사용자 다운로드 폴더에 제목으로 저장. */
@@ -875,7 +875,7 @@ export async function pdf(s: PageSession, outPath: string | undefined, title: st
   const file = outPath ? path.resolve(outPath) : path.join(os.homedir(), 'Downloads', `${safe}.pdf`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, Buffer.from(data, 'base64'));
-  return `PDF로 저장했어요: ${file} (${(fs.statSync(file).size / 1024).toFixed(1)}KB)`;
+  return `Saved PDF: ${file} (${(fs.statSync(file).size / 1024).toFixed(1)}KB)`;
 }
 
 /** 기다리는 도중 바로 멈출 이유 (예: 다른 에이전트의 메시지). 있으면 그 문구를 돌려준다. */
@@ -890,13 +890,13 @@ export async function waitForText(s: PageSession, text: string, timeoutSec: numb
     if (why) return why;
     try {
       const r = await s.evaluate<boolean>(expression, { timeoutMs: 3000 });
-      if (r.value) return `글자가 나타났어요: ${JSON.stringify(text)}`;
+      if (r.value) return `Text appeared: ${JSON.stringify(text)}`;
     } catch (e) {
       if (e instanceof CdpTimeoutError) await s.ensureNoDialog();
     }
     await sleep(200);
   }
-  throw new CdpmError(`${timeoutSec}초 동안 ${JSON.stringify(text)}이(가) 나타나지 않았어요.`);
+  throw new CdpmError(`${JSON.stringify(text)} did not appear within ${timeoutSec}s.`);
 }
 
 /**
@@ -912,10 +912,10 @@ export async function waitForGone(s: PageSession, text: string, timeoutSec: numb
     const why = stop?.();
     if (why) return why;
     const r = await s.evaluate<boolean>(expression, { timeoutMs: 3000 }).catch(() => undefined);
-    if (r?.value) return `글자가 사라졌어요: ${JSON.stringify(text)}`;
+    if (r?.value) return `Text gone: ${JSON.stringify(text)}`;
     await sleep(100);
   }
-  throw new CdpmError(`${timeoutSec}초 동안 ${JSON.stringify(text)}이(가) 사라지지 않았어요.`);
+  throw new CdpmError(`${JSON.stringify(text)} did not disappear within ${timeoutSec}s.`);
 }
 
 /** ref 요소가 눌릴 수 있게 될 때까지 (disabled·aria-disabled·감싸는 fieldset[disabled]가 모두 풀림). 화면은 건드리지 않는다. */
@@ -937,7 +937,7 @@ export async function waitForEnabled(s: PageSession, agent: string, ref: string,
       if (why) return why;
       obj ??= await objectOf(fs, t);
       const st = await callOn<string>(fs, obj, check).catch(() => 'gone');
-      if (st === 'on') return `눌릴 수 있게 됐어요: [${ref}]`;
+      if (st === 'on') return `Now enabled: [${ref}]`;
       if (st === 'gone') {
         // 화면이 다시 그려지며 요소가 바뀌었을 수 있다 → 같은 ref로 한 번 더 찾아보고, 없으면 오류
         obj = undefined;
@@ -949,7 +949,7 @@ export async function waitForEnabled(s: PageSession, agent: string, ref: string,
     // Chrome이 붙잡고 있는 요소 손잡이를 놓는다 (놓지 않으면 사라진 요소도 Chrome 메모리에 남음)
     await release(fs);
   }
-  throw new CdpmError(`${timeoutSec}초 동안 [${ref}]이(가) 눌릴 수 있게 되지 않았어요 (아직 비활성).`);
+  throw new CdpmError(`[${ref}] did not become enabled within ${timeoutSec}s (still disabled).`);
 }
 
 /**
@@ -969,7 +969,7 @@ export async function waitForResponse(s: PageSession, pattern: string, since: nu
     if (hit) return hit;
     await sleep(50);
   }
-  throw new CdpmError(`${timeoutSec}초 동안 주소에 ${JSON.stringify(pattern)}이(가) 들어간 응답이 오지 않았어요. browser_network로 실제 요청 주소를 확인하세요.`);
+  throw new CdpmError(`No response with URL containing ${JSON.stringify(pattern)} within ${timeoutSec}s. Check actual request URLs with browser_network.`);
 }
 
 /** 기다리는 도중 다른 에이전트의 메시지 등으로 멈춤 (오류가 아니라 결과로 알린다) */
@@ -985,11 +985,11 @@ export async function waitForUrl(s: PageSession, contains: string | undefined, t
     if (why) return why;
     const now = await href();
     if (now && (contains ? decodeUrl(now).includes(contains) || now.includes(contains) : now !== start)) {
-      return `주소가 바뀌었어요: ${decodeUrl(now).slice(0, 200)}`;
+      return `URL changed: ${decodeUrl(now).slice(0, 200)}`;
     }
     await sleep(100);
   }
-  throw new CdpmError(`${timeoutSec}초 동안 주소가 ${contains ? `"${contains}"이(가) 들어간 주소로` : ''} 바뀌지 않았어요 (지금: ${decodeUrl(start ?? '').slice(0, 120)}).`);
+  throw new CdpmError(`URL did not change${contains ? ` to one containing "${contains}"` : ''} within ${timeoutSec}s (now: ${decodeUrl(start ?? '').slice(0, 120)}).`);
 }
 
 /**
@@ -1000,31 +1000,31 @@ export async function upload(s: PageSession, agent: string, ref: string | undefi
   await s.ensureNoDialog();
   const paths = files.map((f) => path.resolve(f));
   const missing = paths.filter((p) => !fs.existsSync(p) || !fs.statSync(p).isFile());
-  if (missing.length) throw new CdpmError(`파일을 찾지 못했어요: ${missing.join(', ')}`);
+  if (missing.length) throw new CdpmError(`File not found: ${missing.join(', ')}`);
   const names = paths.map((p) => path.basename(p)).join(', ');
   if (!ref) {
     const c = s.fileChooser;
     if (!c || Date.now() - c.at > 10 * 60_000) {
-      throw new CdpmError('넣을 곳이 없어요. 파일 칸의 ref를 주거나, 먼저 "파일 첨부" 버튼을 browser_click으로 누르세요 (파일 선택 창을 가로채 둠).');
+      throw new CdpmError('No target. Give the file input ref, or first browser_click the attach button (the file chooser will be intercepted).');
     }
-    if (!c.multiple && paths.length > 1) throw new CdpmError('이 파일 칸은 파일을 하나만 받아요.');
+    if (!c.multiple && paths.length > 1) throw new CdpmError('This file input accepts only one file.');
     await send(c.fs, 'DOM.setFileInputFiles', { files: paths, backendNodeId: c.backendNodeId });
     s.fileChooser = undefined;
-    return `파일을 넣었어요 (${paths.length}개): ${names}`;
+    return `Uploaded ${paths.length} file(s): ${names}`;
   }
   const t = targetOf(s, agent, ref);
   const { fs: fsess } = await locate(s, t);
   try {
     const obj = await objectOf(fsess, t);
     const info = await describe(fsess, obj, ref);
-    if (!info.fileInput) throw new CdpmError(`[${ref}]는 파일 칸이 아니에요. 사이트가 만든 "첨부" 버튼이면 browser_click으로 누른 뒤 ref 없이 browser_upload를 부르세요.`);
+    if (!info.fileInput) throw new CdpmError(`[${ref}] is not a file input. For a custom attach button, browser_click it, then call browser_upload without ref.`);
     const input = await callOnObject(fsess, obj, 'function () { return this.tagName === "LABEL" ? this.control : this; }');
-    if (!input) throw new CdpmError(`[${ref}]의 파일 칸을 찾지 못했어요.`);
+    if (!input) throw new CdpmError(`File input for [${ref}] not found.`);
     const multiple = await callOn<boolean>(fsess, input, 'function () { return !!this.multiple; }');
-    if (!multiple && paths.length > 1) throw new CdpmError(`[${ref}]는 파일을 하나만 받아요.`);
+    if (!multiple && paths.length > 1) throw new CdpmError(`[${ref}] accepts only one file.`);
     await send(fsess, 'DOM.setFileInputFiles', { files: paths, objectId: input });
     const count = await callOn<number>(fsess, input, 'function () { return this.files ? this.files.length : 0; }');
-    return `파일을 넣었어요: [${ref}] ${count}개 (${names})`;
+    return `Uploaded to [${ref}]: ${count} file(s) (${names})`;
   } finally {
     await release(fsess);
   }
@@ -1033,12 +1033,12 @@ export async function upload(s: PageSession, agent: string, ref: string | undefi
 export async function evaluate(s: PageSession, expression: string): Promise<string> {
   await s.ensureNoDialog();
   const r = await s.evaluate(expression, { awaitPromise: true, timeoutMs: 30_000 });
-  if (r.exception) throw new CdpmError(`JS 오류: ${r.exception}`);
+  if (r.exception) throw new CdpmError(`JS error: ${r.exception}`);
   if (r.type === 'undefined') return 'undefined';
   if (r.unserializableValue) return r.unserializableValue;
   if ('value' in r) {
     const json = JSON.stringify(r.value, null, 2) ?? String(r.value);
-    return json.length > 20_000 ? json.slice(0, 20_000) + '\n… (잘렸음)' : json;
+    return json.length > 20_000 ? json.slice(0, 20_000) + '\n… (truncated)' : json;
   }
   return r.description ?? String(r.type);
 }
@@ -1065,9 +1065,9 @@ export async function extractText(s: PageSession, agent: string, ref: string | u
     text = r.value ?? '';
   }
   text = text.replace(/\n{3,}/g, '\n\n');
-  if (!text) return '(글자가 없어요)';
+  if (!text) return '(no text)';
   const p = paginate(text, page);
-  return `${p.body}\n\n— ${p.page}/${p.pages}쪽 (전체 ${text.length.toLocaleString()}자)${p.page < p.pages ? ` · 다음: page=${p.page + 1}` : ' · 끝'}`;
+  return `${p.body}\n\n— page ${p.page}/${p.pages} (${text.length.toLocaleString()} chars)${p.page < p.pages ? ` · next: page=${p.page + 1}` : ' · end'}`;
 }
 
 /**
@@ -1100,12 +1100,12 @@ export async function screenshot(s: PageSession, browser: CdpConnection): Promis
     const { windowId } = await browser.send<{ windowId: number }>('Browser.getWindowForTarget', { targetId: s.targetId }, 3000);
     const { bounds } = await browser.send<{ bounds: { windowState: string } }>('Browser.getWindowBounds', { windowId }, 3000);
     if (bounds.windowState === 'minimized') {
-      throw new CdpmError('Chrome 창이 최소화돼 있어서 캡처할 수 없어요. CDPM은 창 상태를 바꾸지 않습니다. 필요하면 사용자에게 창을 띄워 달라고 하세요. (텍스트 스냅샷과 본문 읽기는 됩니다)');
+      throw new CdpmError('Cannot capture: the Chrome window is minimized. CDPM does not change window state; ask the user to restore it if needed. (Text snapshot and browser_text still work.)');
     }
   } catch (e) {
     if (e instanceof CdpmError) throw e;
   }
-  throw new CdpmError('캡처하지 못했어요 (5초 동안 화면 프레임이 오지 않았어요). 페이지가 무겁거나 멈춰 있을 수 있어요. 텍스트 스냅샷이나 browser_text로 확인해 보세요.');
+  throw new CdpmError('Capture failed (no frame within 5s). The page may be heavy or frozen. Try a text snapshot or browser_text.');
 }
 
 /** 진행 중인 네트워크 요청이 quietMs 동안 없고 문서 로딩도 끝났을 때까지 기다린다 (스크린샷·읽기 전에). */
@@ -1119,11 +1119,11 @@ export async function waitNetworkIdle(s: PageSession, timeoutSec: number, quietM
     const ready = (await s.evaluate<string>('document.readyState', { timeoutMs: 5000 }).catch(() => undefined))?.value;
     if (s.network.inflight.size || ready !== 'complete') quietSince = 0;
     else if (!quietSince) quietSince = Date.now();
-    else if (Date.now() - quietSince >= quietMs) return `네트워크가 잠잠해졌어요 (문서 로딩 완료, ${quietMs}ms 동안 진행 중인 요청 없음).`;
+    else if (Date.now() - quietSince >= quietMs) return `Network idle (document loaded, no requests for ${quietMs}ms).`;
     await sleep(100);
   }
   const pending = s.network.list().filter((e) => s.network.inflight.has(e.requestId)).slice(-3).map((e) => `  - ${e.type} ${decodeUrl(e.url).slice(0, 100)}`);
-  return `${timeoutSec}초 안에 네트워크가 잠잠해지지 않았어요 (진행 중 ${s.network.inflight.size}개). 계속 요청을 보내는 페이지일 수 있어요.${pending.length ? `\n진행 중인 요청 예:\n${pending.join('\n')}` : ''}`;
+  return `Network not idle within ${timeoutSec}s (${s.network.inflight.size} in flight). The page may poll continuously.${pending.length ? `\nPending examples:\n${pending.join('\n')}` : ''}`;
 }
 
 /** 방금(10초 안) 이 탭에서 다운로드가 시작됐으면 알림 문구 */
@@ -1131,5 +1131,5 @@ export function downloadNote(s: PageSession): string {
   const d = s.lastDownload;
   if (!d || Date.now() - d.at > 10_000) return '';
   s.lastDownload = undefined;
-  return `\n[주의] 파일 내려받기가 시작됐어요: ${d.file} (${decodeUrl(d.url).slice(0, 80)}) — 사용자 PC의 다운로드 폴더에 저장돼요. 끝나면 저장 경로를 받으려면 browser_download_wait.`;
+  return `\n[warning] Download started: ${d.file} (${decodeUrl(d.url).slice(0, 80)}) — saved to the user's Downloads folder. Use browser_download_wait to get the path when done.`;
 }

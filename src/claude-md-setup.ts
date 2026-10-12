@@ -9,23 +9,26 @@ const START = '<!-- CDPM:START (cdpm setup이 관리하는 부분) -->';
 const END = '<!-- CDPM:END -->';
 
 export const CDPM_RULES = `${START}
-## CDPM (Chrome 슬롯 MCP) 사용 규칙
+## CDPM (Chrome slot MCP) rules
 
-- 역할 구분 (여러 슬롯을 쓰는 작업은 사이트와 상관없이 항상):
-  - 메인: 사용자와 대화, 슬롯 켜기·끄기, 서브에이전트에게 일 나눠 주기, 결과 합쳐서 보고. 슬롯 화면을 직접 이동·읽기·조작하지 않는다.
-  - 서브에이전트(cdpm-browser): 맡은 슬롯 하나의 주소 이동·읽기·입력·클릭, 로그인 등 완료 감지, 자기 몫 결과물, 필요하면 다른 서브에이전트와 신호까지 전부.
-  - 슬롯 하나로 끝나는 간단한 일은 메인이 직접 해도 된다.
-- 여러 CDPM 슬롯에 각각 다른 일을 시키면(예: "5개 띄워서 하나는 네이버, 하나는 유튜브…") 메인이 직접 처리하지 않는다.
-  1. browser_launch 한 번으로 슬롯을 모두 켠다 (slots 또는 count). 시작 페이지를 알면 url/urls로 켜면서 바로 연다. 메인은 여기까지만 하고, 주소 이동·읽기·조작은 처음부터 서브에이전트가 한다.
-  2. 한 메시지 안에서 Agent 도구를 슬롯 수만큼 함께 불러 서브에이전트를 한꺼번에 띄운다. 모두 run_in_background: true로 (앞 서브에이전트가 끝나길 기다리지 않게). subagent_type은 "cdpm-browser"(CDPM 전용, 빨리 시작)를 쓴다.
-     - 지시는 1~3줄로 짧게: 슬롯 번호, agent 이름(예: "네이버담당"), 할 일만. cdpm-browser는 CDPM 사용법·규칙을 이미 알고 있으니 다시 설명하지 않는다 (긴 지시를 쓰는 시간만큼 늦어진다).
-     - 서브에이전트는 동시에 20개까지만 뜬다. 슬롯이 20개를 넘으면 20개를 먼저 띄우고 끝나는 대로 나머지를 띄운다 (늘리려면 환경변수 CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).
-  3. 결과물(보고서·HTML 조각·표 등)도 각 서브에이전트가 자기 몫을 써서 돌려주고, 메인은 합치기만 한다.
-- 한 에이전트는 한 슬롯만 조작한다 (CDPM이 다른 슬롯 조작을 거절한다. 다른 슬롯 화면 보기는 괜찮다).
-- 어느 사이트든 사용자가 로그인·본인 인증·보안문자 등을 해야 해도 "됐다고 알려 달라"고 하지 않는다. 서브에이전트를 먼저 띄워 두고 각자 화면을 건드리지 않고(새로고침 금지) browser_wait url/gone/text로 완료를 감지해 이어서 진행하게 한다.
-- 기다림은 최소한으로. 서브에이전트끼리 협업하면(서로 메일 주고받기 등) 일을 끝내는 즉시 slot_send로 상대에게 알리고, 상대를 기다릴 때는 slot_inbox wait로 기다리게 한다 (화면을 반복해서 새로고침하지 않는다). 서브에이전트에게 긴 고정 대기를 지시하지 않는다.
-- 화면이 필요하면 조작 도구에 read를 붙여 한 번에 받는다 (글은 text, 누를 게 필요하면 snapshot, 바뀐 것만 보려면 changes).
-- When several CDPM slots get different jobs, start one cdpm-browser subagent per slot in a single message (at most 20 at once), let each write its own part of the output, and only merge in the main agent.
+- Reply to the user in the user's language.
+- Roles (always, for any job using multiple slots or tabs, on any site):
+  - Main: talks to the user, launches/closes slots, hands work to subagents, merges and reports results. Never navigates, reads or acts on slot screens itself.
+  - Subagent (cdpm-browser): everything on its one slot: navigation, reading, typing, clicking, detecting login completion, its own part of the output, and signaling other subagents when needed.
+  - A simple job on a single slot can be done by the main agent directly.
+- Windowed (visible) vs headless is the user's call: headless: true only if the user says "headless", "hidden", "no window"; false for "show the window", "headful" (in any language). If unspecified, don't guess; ask first (once for multiple slots).
+- When several CDPM slots get different jobs (e.g. "open 5, one for Naver, one for YouTube...", "log in on slot 1 and open another site on slot 2"), the main agent does not do them itself.
+  1. Launch all slots with one browser_launch (slots or count). If start pages are known, open them at launch with url/urls. The main agent stops there; subagents do all navigation, reading and actions from the start.
+  2. In one message, call the Agent tool once per slot to start all subagents together, each with run_in_background: true (don't wait for one to finish). Use subagent_type "cdpm-browser" (CDPM-only, starts fast).
+     - Keep instructions to 1-3 lines: slot number, agent name (e.g. "naver"), task. cdpm-browser already knows CDPM usage and rules; don't repeat them (long instructions only add delay).
+     - At most 20 subagents run at once. With more than 20 slots, start 20 first and the rest as they finish (raise via env CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).
+  3. Each subagent writes and returns its own part of the output (report, HTML fragment, table, etc.); the main agent only merges.
+- If tabs within one slot get different jobs (e.g. "slot 1 first tab logs in, second tab does X on another site"), assign one subagent per tab just like slots (the main agent doesn't switch tabs doing them in turn). Each uses only its assigned tab number or opens its own with browser_tab_new, with a distinct agent name per tab (e.g. "slot1-tab1"). Same slot, so the one-agent-one-slot rule doesn't apply; actions queue per tab and run concurrently. If a tab's job depends on another finishing first (e.g. needs login), the dependent owner waits with slot_inbox(wait) and the other notifies with slot_send as soon as done (login carries over to other tabs since they share the profile).
+- One agent acts on one slot only (CDPM rejects actions on another slot; viewing other slots is fine).
+- When the user must log in, verify identity, solve a CAPTCHA, etc. on any site, never ask them to say when done. Start the subagents first and have each detect completion with browser_wait url/gone/text without touching the screen (no reload), then continue.
+- Waits that may take minutes (bulk collection/processing, waiting for user login, etc.) are not done by the main agent: hand them to a background subagent (run_in_background: true), tell the user the current status right away and keep talking. While the main agent blocks on browser_wait or a long foreground shell command, it can't answer the user.
+- Keep waiting minimal. When subagents collaborate (e.g. exchanging emails), each notifies the other with slot_send as soon as its part is done and waits with slot_inbox wait (no repeated screen refreshes). Never instruct subagents to use long fixed waits.
+- When you need the screen, add read to the action tool to get it in one call (text for content, snapshot when you need things to click, changes to see only what changed).
 ${END}`;
 
 export function claudeMdPath(): string {
