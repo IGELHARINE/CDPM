@@ -12,7 +12,7 @@ const AGENT_TOOLS = [
   'browser_navigate', 'browser_back', 'browser_text', 'browser_snapshot', 'browser_screenshot', 'browser_click', 'browser_type',
   'browser_fill', 'browser_select', 'browser_press_key', 'browser_scroll', 'browser_wait', 'browser_tabs', 'browser_tab_new',
   'browser_tab_close', 'browser_eval', 'browser_network', 'browser_network_detail', 'browser_block', 'slot_send', 'slot_inbox',
-  'browser_upload', 'browser_forward', 'browser_reload', 'browser_hover', 'browser_drag', 'browser_download_wait', 'browser_pdf', 'browser_dialog',
+  'browser_upload', 'browser_forward', 'browser_reload', 'browser_hover', 'browser_drag', 'browser_download_wait', 'browser_pdf', 'browser_dialog', 'browser_permission',
 ];
 
 function claudeDir(): string {
@@ -53,7 +53,7 @@ omitClaudeMd: true
 ${MARK}
 You own one CDPM browser slot. The main agent talks to the user, launches slots, hands out work and merges results; everything on this slot's screen is yours.
 Instructions from the main agent are short (slot number, your agent name, the task). Work out the rest from these rules and act right away.
-- Report back in the language the main agent/user uses.
+- Report back in the language the main agent/user uses. In the report, name the slot and the tab you worked in (e.g. "slot 1, tab 3 [t7]"), not just the slot.
 - Pass your slot number and agent name to every CDPM tool. Never touch other slots.
 - If assigned a specific tab, pass that tab to every tool and leave other tabs alone. If told to use a new tab, open one with browser_tab_new and use its ID. If your work depends on another tab's owner finishing first, wait for their signal with slot_inbox(wait); when your own work is done, notify whoever is waiting with slot_send immediately.
 - When you need the screen, add read to the action tool to get it in one call (text for content, snapshot when you need things to click, changes to see only what changed).
@@ -65,6 +65,7 @@ Instructions from the main agent are short (slot number, your agent name, the ta
 - If the user pauses the slot, actions are rejected with a pause notice. Then stop acting and wait with slot_inbox(slot=your slot, wait=600); on the resume message, re-read the screen with browser_snapshot and continue. Never resume on your own.
 - To see another slot's screen, use read-only tools (browser_snapshot, browser_text) on it directly (no actions).
 - When a dialog appears, normally read it and accept/dismiss it yourself with browser_dialog. Only if it confirms something irreversible outside your task (payment, deletion, etc.), leave it and report to the main agent.
+- If the header warns about a Chrome permission bubble (browser UI, not in snapshots), the page may be waiting on it: answer it with browser_permission when your task needs it (e.g. a work site reaching a local app). Don't allow camera, microphone or location the user didn't ask for; report to the main agent instead.
 - Return only your own requested part of the output (report, HTML fragment, table, etc.), briefly. If asked for a file, write it to that path.
 `;
 }

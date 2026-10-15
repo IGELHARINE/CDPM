@@ -214,13 +214,21 @@ describe('상태줄', () => {
     assert.ok(displayWidth(tiny) <= 38, tiny);
     assert.match(tiny, /  \+\d+$/);
   });
+  it('모두에게 제목을 못 붙여도 남는 칸만큼 앞 슬롯부터 짧은 제목', () => {
+    const ten = Array.from({ length: 10 }, (_, i) => [i + 1, { ...rec('x'), title: i === 0 ? '작업 요청 · DL' : 'Google' }] as [number, SlotRecord]);
+    const line = formatStatusline(ten, false, 90);
+    assert.ok(displayWidth(line) <= 88, line);
+    assert.match(line, /^CDPM  1 작업 …  2 Googl…/);
+    assert.match(line, /  10$/);
+  });
   it('13개 이상이면 번호만', () => {
     const many = Array.from({ length: 13 }, (_, i) => [i + 1, rec(`a${i + 1}`)] as [number, ReturnType<typeof rec>]);
     assert.match(formatStatusline(many, false), /^CDPM  1  2  3 /);
   });
-  it('없으면 흐린 "CDPM  -", 색은 ANSI 24비트', () => {
+  it('없으면 "CDPM  -" (CDPM 조금 어두운 흰색, - 흐린 회색), 색은 ANSI 24비트', () => {
     assert.equal(formatStatusline([], false), 'CDPM  -');
-    assert.equal(formatStatusline([]), '[90mCDPM  -[0m');
+    assert.equal(formatStatusline([]), '[38;2;225;225;225mCDPM[0m  [90m-[0m');
+    assert.ok(formatStatusline([[1, rec('a')]]).startsWith('[38;2;225;225;225mCDPM[0m  '));
     assert.match(formatStatusline([[1, rec('a')]]), /\x1b\[1;38;2;37;99;235m1\x1b\[0m$/);
   });
 });

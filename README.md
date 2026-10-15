@@ -123,6 +123,7 @@ All tools take `slot` (1–30) and `agent` (display name). Action tools also tak
 | `browser_type` | Real key events per character (`clear`, `submit`, `fast`); verifies the value and does not press Enter for `submit` if the value differs (the site rejected or reformatted the input); date/time inputs are set after format validation |
 | `browser_fill` | Fill several inputs on one page in order, then optionally `submit` ("Enter" or a button ref); stops at the first failure, page change, dialog or a field whose value differs from what was typed (nothing is submitted then) |
 | `browser_dialog` | Accept or dismiss an open alert/confirm/prompt/beforeunload (`text` for prompt). Claude decides from the message |
+| `browser_permission` | List or answer Chrome permission bubbles ("site wants to access other apps and services on this device", notifications, location…) by exact button name. Windows, windowed slots |
 | `browser_forward` / `browser_reload` | Forward / reload (Chrome's own reload, `ignore_cache`) |
 | `browser_hover` | Real mouse over an element (hover-only menus) |
 | `browser_drag` | Real mouse drag: drag-and-drop, sliders, reordering. Drop on `to` (ref), `to_text` (text) or `dx`/`dy`. HTML5 drags are handled without an OS drag; `draggable` elements get refs |
@@ -185,6 +186,7 @@ Data lives in `%LOCALAPPDATA%\cdpm\` on Windows `~/Library/Application Support/c
 - Launch flags are only `--remote-debugging-port`, `--user-data-dir`, `--no-first-run`, `--no-default-browser-check`, `--window-name` (plus `--headless` on request, and `--proxy-server` + `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` only when the user asks for a proxy; headless Chrome still reports `HeadlessChrome`).
 - Never changes window size/position/state, viewport, or zoom; if a click makes the page fullscreen, it is exited immediately.
 - No `Runtime.enable`; helper scripts run in an isolated world.
+- Chrome permission bubbles are browser UI, so they never show up in snapshots or screenshots and page tools can't click them, while the page waits on them. On Windows, CDPM spots them (a small window owned by the slot's Chrome whose title contains a tab's host, so translate or password bubbles are ignored and the Chrome language doesn't matter), warns in the result header, stops `browser_wait` as soon as one appears, and lets Claude press a button with `browser_permission` (UI Automation; works while the window is minimized or covered). Claude asks before allowing camera, microphone or location the user didn't ask for.
 - Dialogs (alert/confirm/prompt/beforeunload) are reported, never handled automatically. Claude reads the message and handles it itself with `browser_dialog` (accept or dismiss); it asks the user only when the dialog would confirm something irreversible the user did not ask for (a payment, a deletion).
 - Refuses: `mailto:`/`tel:`/app-scheme links and addresses in click, navigate, launch start pages and new tabs (would launch other programs), clicking `<select>` (popup), `Ctrl+C/X/V`/`Shift+Insert` (user clipboard). Downloads triggered by navigation are reported with the file name.
 

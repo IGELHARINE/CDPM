@@ -8,8 +8,19 @@ export interface WindowAppProps {
   iconPath: string;
 }
 
+/** Chrome 본 창에 딸린 작은 창 (권한 요청·번역 등 말풍선). */
+export interface OwnedWindow {
+  hwnd: unknown;
+  key: string;
+  title: string;
+  visible: boolean;
+  /** 딸린 본 창이 최소화됨 (그동안 말풍선은 숨겨져 있다) */
+  ownerMinimized: boolean;
+}
+
 export interface Win32 {
   chromeWindowsOf(pid: number): unknown[];
+  ownedWindowsOf(pid: number): OwnedWindow[];
   windowKey(hwnd: unknown): string;
   getAppId(hwnd: unknown): string | undefined;
   setAppProps(hwnd: unknown, props: WindowAppProps): boolean;
@@ -50,6 +61,8 @@ function load(): Win32 {
   const IsWindowVisible = user32.func('bool __stdcall IsWindowVisible(void *hwnd)');
   const GetWindow = user32.func('void * __stdcall GetWindow(void *hwnd, uint32 cmd)');
   const GetClassNameW = user32.func('int __stdcall GetClassNameW(void *hwnd, _Out_ uint8_t *buf, int max)');
+  const GetWindowTextW = user32.func('int __stdcall GetWindowTextW(void *hwnd, _Out_ uint8_t *buf, int max)');
+  const IsIconic = user32.func('bool __stdcall IsIconic(void *hwnd)');
   const LoadImageW = user32.func('void * __stdcall LoadImageW(void *inst, str16 name, uint32 type, int cx, int cy, uint32 flags)');
   const SendMessageTimeoutW = user32.func('intptr __stdcall SendMessageTimeoutW(void *hwnd, uint32 msg, uintptr w, void *l, uint32 flags, uint32 timeout, void *result)');
   const GetSystemMetrics = user32.func('int __stdcall GetSystemMetrics(int index)');
@@ -96,6 +109,32 @@ function load(): Win32 {
           const buf = Buffer.alloc(512);
           const n = GetClassNameW(hwnd, buf, 256);
           if (buf.toString('utf16le', 0, n * 2) === 'Chrome_WidgetWin_1') found.push(hwnd);
+        }
+        return true;
+      }, koffi.pointer(EnumProc));
+      try {
+        EnumWindows(cb, 0);
+      } finally {
+        koffi.unregister(cb);
+      }
+      return found;
+    },
+
+    ownedWindowsOf(pid) {
+      const found: OwnedWindow[] = [];
+      const cb = koffi.register((hwnd: unknown) => {
+        const p = [0];
+        GetWindowThreadProcessId(hwnd, p);
+        const owner = p[0] === pid ? GetWindow(hwnd, 4 /* GW_OWNER */) : null;
+        if (owner) {
+          const cls = Buffer.alloc(512);
+          const n = GetClassNameW(hwnd, cls, 256);
+          if (cls.toString('utf16le', 0, n * 2) === 'Chrome_WidgetWin_1') {
+            const buf = Buffer.alloc(1024);
+            const m = GetWindowTextW(hwnd, buf, 512);
+            const title = buf.toString('utf16le', 0, m * 2);
+            if (title) found.push({ hwnd, key: String(koffi.address(hwnd)), title, visible: IsWindowVisible(hwnd), ownerMinimized: IsIconic(owner) });
+          }
         }
         return true;
       }, koffi.pointer(EnumProc));

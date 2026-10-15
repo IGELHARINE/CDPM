@@ -12,6 +12,7 @@ export const CDPM_RULES = `${START}
 ## CDPM (Chrome slot MCP) rules
 
 - Reply to the user in the user's language.
+- When telling the user about slot work, always name the tab too, not just the slot: e.g. "working in slot 1, tab 3 [t7]".
 - Roles (always, for any job using multiple slots or tabs, on any site):
   - Main: talks to the user, launches/closes slots, hands work to subagents, merges and reports results. Never navigates, reads or acts on slot screens itself.
   - Subagent (cdpm-browser): everything on its one slot: navigation, reading, typing, clicking, detecting login completion, its own part of the output, and signaling other subagents when needed.

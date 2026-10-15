@@ -7,6 +7,7 @@ import { wildcard, type BlockRule, type NetEntry } from '../cdp/network.js';
 import { browserConnection, forgetSlotVisibility, knownDialog, onAgentForgotten, pageSession, touchAgent, type DialogInfo, type PageSession } from '../cdp/sessions.js';
 import { ensureDownloadTracking, waitDownload } from '../cdp/downloads.js';
 import { probe } from '../cdp/targets.js';
+import { bubbleDetail, bubbleLine, hostsOf, permissionBubbles, pressBubble } from '../chrome/bubbles.js';
 import { describeProxy, parseProxy, type ProxySpec } from '../chrome/proxy.js';
 import { isClaudeCode } from '../client-info.js';
 import { CdpmError } from '../errors.js';
@@ -115,6 +116,8 @@ async function header(slot: number, agent: string, tabs: TabView[], opts: { exec
     const blocks = liveBlocks(t);
     if (blocks.length) warnings.push(`[${t.id}] blocking requests: ${blocks.map((b) => `${b.pattern} (${b.agent})`).join(', ')}`);
   }
+  // Chrome 권한 요청 말풍선 (페이지 밖 브라우저 화면이라 스냅샷에 안 보인다)
+  for (const b of permissionBubbles(slot, hostsOf(tabs.map((t) => t.url)))) warnings.push(bubbleLine(b, await bubbleDetail(b)));
   const dialogs = dialogsOf(slot, tabs);
   // 탭 목록이 이 에이전트가 지난번에 본 것과 같고 경고·알림창·메시지도 없으면 한 줄로 (읽을 양을 줄여 다음 판단이 빨라지게)
   const key = `${slot}:${agent}`;
@@ -576,6 +579,51 @@ export function registerTools(server: McpServer) {
     inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, accept: z.boolean().describe('true = OK, false = cancel'), text: z.string().optional().describe('Text for a prompt dialog (used only when accepting)'), read: readArg, summary: summaryArg },
   }, async (args) => onTab(args, 'action', 'dialog', async (s) => ({ text: await act.handleDialog(s, args.accept, args.text) }), { render: false }));
 
+  server.registerTool('browser_permission', {
+    title: 'Answer permission bubble',
+    description: 'Lists or answers Chrome permission bubbles ("site wants to: access other apps and services on this device / show notifications / know your location…"). ' +
+      'They are browser UI: not in snapshot/screenshot, page tools can\'t click them, and the page often waits until they are answered. The header warns when one is open. ' +
+      'Without button: shows the open bubbles with their exact button names. With button: presses that button (exact name as listed, e.g. "허용", "Allow", "Block", "Allow while visiting the site"). Windows, windowed slots only.',
+    inputSchema: {
+      slot: slotArg, agent: agentArg, multiSlot: multiSlotArg,
+      button: z.string().optional().describe('Exact button name to press, as listed in the header or by calling without button'),
+      site: z.string().optional().describe('Only when several bubbles are open: part of the bubble title (e.g. the site host) to pick one'),
+    },
+  }, async ({ slot, agent, multiSlot, button, site }) => guard(async () => {
+    const me = agent ?? DEFAULT_AGENT;
+    if (button) {
+      const refused = multiSlotRefusal(me, slot, multiSlot) ?? pausedRefusal(slot);
+      if (refused) return textResult(refused, true);
+    }
+    await attachSlot(slot);
+    const tabs = await syncTabs(slot);
+    const head = async () => header(slot, me, await syncTabs(slot).catch(() => tabs), { skipMessages: true });
+    if (process.platform !== 'win32') return textResult(`${await head()}\n---\nPermission bubbles can only be detected and answered on Windows.`, true);
+    const hosts = hostsOf(tabs.map((t) => t.url));
+    const all = permissionBubbles(slot, hosts);
+    const list = site ? all.filter((b) => b.title.includes(site)) : all;
+    if (!list.length) return textResult(`${await head()}\n---\nNo Chrome permission bubble is open on slot ${slot}${site ? ` matching "${site}"` : ''}.`);
+    if (!button) {
+      const lines = await Promise.all(list.map(async (b) => `- ${bubbleLine(b, await bubbleDetail(b))}`));
+      return textResult(`${await head()}\n---\n${lines.join('\n')}`);
+    }
+    if (list.length > 1) return textResult(`${await head()}\n---\n${list.length} bubbles are open; pass site to pick one: ${list.map((b) => `"${b.title}"`).join(', ')}`, true);
+    const b = list[0];
+    if (!(await pressBubble(b, button))) {
+      const d = await bubbleDetail(b);
+      return textResult(`${await head()}\n---\nNo button named "${button}" in "${b.title}".${d?.buttons.length ? ` Buttons: ${d.buttons.join(', ')}.` : ''}`, true);
+    }
+    // 눌린 뒤 말풍선이 닫혔는지 확인 (보통 바로 닫힌다)
+    let gone = false;
+    for (let i = 0; i < 10 && !gone; i++) {
+      await sleep(100);
+      gone = !permissionBubbles(slot, hosts).some((x) => x.key === b.key && x.title === b.title);
+    }
+    const target = tabs.find((t) => hostsOf([t.url]).some((h) => b.title.includes(h)));
+    if (target) await recordAction(slot, target.targetId, me, `permission: ${button}`, undefined, !agent).catch(() => false);
+    return textResult(`${await head()}\n---\nPressed "${button}" on "${b.title}"${target ? ` (tab ${target.no} [${target.id}])` : ''}${gone ? '; the bubble closed.' : '; the bubble is still open (check again).'}`);
+  }));
+
   server.registerTool('browser_hover', {
     title: 'Hover',
     description: 'Moves the real mouse over a ref element (no click). For hover menus and tooltips. Use read=changes to see the opened menu.',
@@ -722,10 +770,15 @@ export function registerTools(server: McpServer) {
       response: z.string().optional().describe('Until a network response whose URL contains this completes (e.g. "/api/search"). * ? wildcards work (matched against the full URL, e.g. "*api.example.com/v1/items*"). Returns the response body'),
     },
   }, async (args) => onTab(args, 'view', null, async (s, _tab, agent) => {
+    // 기다리는 동안 새로 뜬 권한 말풍선도 바로 알린다 (이미 떠 있던 것은 머리말로 이미 알렸으니 제외)
+    const hosts = hostsOf((await syncTabs(args.slot).catch(() => [])).map((t) => t.url));
+    const known = new Set(permissionBubbles(args.slot, hosts).map((b) => `${b.key}|${b.title}`));
     // 다른 에이전트가 메시지를 보내면 기다리기를 바로 멈춘다 (메시지는 결과 머리말로 전달됨)
     const stop: act.StopCheck = () => {
       if (pausedInfo(args.slot)) return pausedRefusal(args.slot);
-      return hasUnread(args.slot, agent) ? 'Stopped waiting: a new message arrived (see it in the header above and continue).' : undefined;
+      if (hasUnread(args.slot, agent)) return 'Stopped waiting: a new message arrived (see it in the header above and continue).';
+      const fresh = permissionBubbles(args.slot, hosts).find((b) => !known.has(`${b.key}|${b.title}`));
+      return fresh ? `Stopped waiting: Chrome showed a permission bubble "${fresh.title}" (see the header above; answer it with browser_permission).` : undefined;
     };
     if (args.response !== undefined) {
       if (!args.response.trim()) throw new CdpmError('Put part of the URL to wait for in response (e.g. "/api/search").');
@@ -901,6 +954,7 @@ export function registerTools(server: McpServer) {
 
 const INSTRUCTIONS_CLAUDE_CODE = `CDPM: controls Chrome slots 1-30 over CDP. Slot N's CDP port is ${PORT_BASE}+N (slot 1 = ${PORT_BASE + 1}).
 - Always reply to the user in the language the user writes in (these instructions are in English only to save tokens).
+- When telling the user about slot work, always name the tab too, not just the slot: e.g. "working in slot 1, tab 3 [t7]" (tab order from the header, plus its ID).
 - "Look at 3" / "slot 3" means slot=3. Pass slot to every tool.
 - Start Chrome with browser_launch only when the user asks. Other tools never start a closed slot. "Start one" with no number → omit slot (lowest free slot).
 - The user decides windowed (visible) vs headless (hidden): headless: true only if they say "headless", "hidden" or "no window"; false for "visible window" or "headful". If unstated, don't guess; ask first (once for multiple slots).
@@ -925,7 +979,8 @@ const INSTRUCTIONS_CLAUDE_CODE = `CDPM: controls Chrome slots 1-30 over CDP. Slo
 - Other slots' pages can be viewed anytime with view tools (browser_snapshot, browser_text, browser_screenshot); only that slot's owner operates it.
 - Never change window size/position or viewport. Use browser_tab_select (changes the tab the user sees) only when the user wants it.
 - "Pause N" → slot_pause; "resume" → slot_resume. Actions on a paused slot are refused: its agent must not operate it and waits with slot_inbox(wait=600); on the resume message it re-reads with browser_snapshot and continues (never resumes on its own).
-- When a dialog (alert/confirm/prompt/beforeunload) appears, judge from its content and accept/dismiss it yourself with browser_dialog. Ask the user only when it confirms an irreversible action they didn't request (payment, deletion, etc.).`;
+- When a dialog (alert/confirm/prompt/beforeunload) appears, judge from its content and accept/dismiss it yourself with browser_dialog. Ask the user only when it confirms an irreversible action they didn't request (payment, deletion, etc.).
+- Chrome permission bubbles ("site wants to access other apps and services on this device", notifications, location, camera, mic…) are browser UI the page can wait on; the header warns when one is open (Windows). Answer it yourself with browser_permission when the task needs it (e.g. a work site asking to reach a local app). Ask the user before allowing camera, microphone or location they didn't ask for.`;
 
 /** Claude Code가 아닌 클라이언트(Cursor, Claude Desktop 등)용: Agent 도구·run_in_background·cdpm-browser처럼 Claude Code에만 있는 말을 뺀다. */
 const GENERIC_PARALLEL = '- Different jobs on multiple slots (e.g. "open 3, one for Naver, one for Daum…", "log in on 1 and open another site on 2"): if the client supports subagents, hand each slot to one and run them in parallel (main only launches them with one browser_launch). ' +

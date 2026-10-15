@@ -172,6 +172,7 @@ MCP 서버가 처음 켜질 때 한 번, 따로 설정하지 않아도 이렇게
 | `browser_type` | 글자마다 진짜 키 이벤트로 입력 (`clear`, `submit`, `fast`). 입력 후 실제 값 확인: 값이 다르면(사이트가 막거나 형식을 바꿈) `submit`이어도 Enter를 누르지 않아요. 날짜·시간 칸은 형식 확인 후 값 지정 |
 | `browser_fill` | 같은 페이지의 입력칸 여러 개를 차례로 채우고, 원하면 `submit`("Enter" 또는 버튼 ref). 실패·페이지 바뀜·알림창, 또는 넣은 값이 다른 칸이 있으면 그 자리에서 멈추고 제출하지 않아요 |
 | `browser_dialog` | 떠 있는 알림창(alert/confirm/prompt/beforeunload) 확인·취소 (prompt는 `text`로 입력). Claude가 내용을 보고 판단 |
+| `browser_permission` | Chrome 권한 요청 말풍선("이 기기의 다른 앱 및 서비스에 액세스", 알림, 위치 등)을 보거나 버튼 이름으로 누름. Windows, 창 모드 슬롯 |
 | `browser_forward` / `browser_reload` | 앞으로 / 새로고침 (Chrome 새로고침 그대로, `ignore_cache`) |
 | `browser_hover` | 진짜 마우스를 요소 위에 올리기 (마우스를 올려야 열리는 메뉴) |
 | `browser_drag` | 진짜 마우스로 끌어 놓기: 드래그 앤 드롭·슬라이더·순서 바꾸기. 놓을 곳은 `to`(ref)·`to_text`(글자)·`dx`/`dy`. HTML 드래그도 OS 드래그 없이 처리. `draggable` 요소에도 ref가 붙어요 |
@@ -253,6 +254,7 @@ Windows `%LOCALAPPDATA%\cdpm\`, macOS `~/Library/Application Support/cdpm/`, Lin
 - 실행 인자는 `--remote-debugging-port`, `--user-data-dir`, `--no-first-run`, `--no-default-browser-check`, `--window-name=N번`뿐이에요 (헤드리스 요청 시 `--headless`, 사용자가 프록시를 부탁했을 때만 `--proxy-server`와 `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` 추가). 헤드리스 Chrome은 User-Agent에 `HeadlessChrome`이 그대로 찍혀요.
 - 창 크기·위치·상태, 뷰포트, 확대 비율을 바꾸지 않아요. 페이지가 클릭 때문에 전체 화면이 되면 바로 해제해요.
 - `Runtime.enable`을 쓰지 않고, 판단용 스크립트는 전부 isolated world에서 실행해요.
+- Chrome 권한 요청 말풍선은 페이지가 아니라 브라우저 화면이라 스냅샷·스크린샷에 안 보이고 페이지 도구로 누를 수 없는데, 페이지는 그 답을 기다리며 멈춰요. Windows에서는 CDPM이 이걸 찾아서(슬롯 Chrome 창에 딸린 작은 창 중 제목에 탭의 사이트 주소가 들어간 것. 번역·비밀번호 저장 말풍선은 걸러지고 Chrome 언어와 상관없음) 결과 머리말로 알리고, `browser_wait` 중이면 뜨는 즉시 멈추고, Claude가 `browser_permission`으로 버튼을 눌러요(UI Automation. 창이 최소화되거나 가려져 있어도 됨). 사용자가 시키지 않은 카메라·마이크·위치 허용은 먼저 물어봐요.
 - 알림창(alert/confirm/prompt/beforeunload)을 정해진 규칙으로 자동 처리하지 않아요. 떠 있으면 알리고, Claude가 내용을 보고 `browser_dialog`로 직접 확인·취소해요. 사용자가 시키지 않은 되돌릴 수 없는 일(결제·삭제 등)을 확정하는 창일 때만 먼저 물어봐요.
 - 거부하는 동작: `mailto:`·`tel:`·앱 전용 주소로 클릭·이동·켜면서 열기·새 탭 열기(다른 프로그램 실행), `<select>` 클릭(목록 창), `Ctrl+C/X/V`·`Shift+Insert`(사용자 클립보드)
 - 사람이 직접 누른 건 평소처럼 떠요. **에이전트가 조작하는 그 순간에만** OS 창이 뜨지 않게 해요:
