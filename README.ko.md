@@ -1,14 +1,55 @@
-# CDPM — CDP Manager
+# CDPM
 
 [English README](README.md)
 
-> **설치를 부탁받았다면 (Claude·AI 에이전트용)** 아래 순서대로 하세요.
-> 1. Node.js 22 이상과 Google Chrome이 있는지 확인해요. 없으면 사용자에게 알리고 멈춰요.
-> 2. `npm install -g cdpm-mcp@latest` 를 실행해요 (이미 설치돼 있어도 그대로 실행 → 최신으로 업데이트).
-> 3. `cdpm install` 을 실행해요 (`cdpm`을 못 찾으면 `node "$(npm root -g)/cdpm-mcp/dist/cli.js" install`). Claude Code 등록과 상태줄·규칙·서브에이전트·권한 설정을 한 번에 해요. 예전에 git으로 받아 등록해 둔 것도 새 위치로 바꿔요.
-> 4. Chrome 슬롯을 켜지 말고, 질문하거나 내부 설명을 덧붙이지 마세요. 성공하면 "CDPM <버전> 설치 완료. Claude Code를 다시 시작하면 쓸 수 있어요." 한 줄만 답해요 (버전은 `cdpm --version`). 실패하면 어느 단계에서 왜 실패했는지만 말해요.
+![CDPM: Claude Code 에이전트를 위한 번호 붙은 Chrome 슬롯](docs/media/social-card@2x.png)
 
-**Chrome 1~30번 슬롯**을 CDP(Chrome DevTools Protocol)로 띄워 두고, 여러 Claude 세션과 서브에이전트가 번호만으로 같은 브라우저를 나눠 쓰고 조종하게 해 주는 MCP 서버예요. *"3번 켜줘"*, *"3번 봐줘"* 한마디면 돼요.
+CDPM은 Chrome을 최대 30개("슬롯") 정해진 디버깅 포트에 띄워 두고, 여러 Claude Code 세션과 서브에이전트가 번호만으로 조종하게 해 주는 MCP 서버예요. *"3번 켜줘"*, *"1번에서 로그인하고 2번에서 양식 채워줘"* 식으로 써요. 슬롯마다 프로필이 따로 있는 평범한 Chrome이라, 로그인이 다음에도 유지되고 사람이 쓰는 브라우저와 똑같아요.
+
+여러 Claude 에이전트를 로그인된 업무용 웹사이트에 동시에 붙여 쓰다가 만들게 됐어요. 정작 어려운 건 버튼 누르기가 아니라, 여러 세션이 브라우저를 나눠 쓰고, 브라우저가 꺼지지 않게 하고, Chrome 자체가 일을 막을 때 알아채는 쪽이었어요.
+
+## 시연
+
+헤드리스 슬롯 11~19번에 서브에이전트 9개. 11~18번은 각자 GitHub 저장소 페이지를 읽어 `slot_send`로 19번에 숫자를 보내고, 19번은 `slot_inbox`로 기다렸다가 비교표를 만들어 열어요. 실제 실행을 CDP로 녹화했고, 걸린 시간은 약 45초예요.
+
+![슬롯 9개가 동시에 일하는 모습](docs/media/demo.gif)
+
+## 무엇이 다른가
+
+- **번호로 부르는 공유 브라우저.** 슬롯 *N*은 포트 `14049 + N`을 쓰고 프로필 폴더가 따로 있어요. 세션이 브라우저를 소유하지 않고 슬롯 번호로 불러 써요. 두 세션이 한 슬롯의 다른 탭에서 동시에 일할 수 있고, 명령은 탭마다 줄을 세워서 두 에이전트가 같은 탭에 입력해도 섞이지 않아요. 통합 테스트로 확인하고, 세션 3개가 한 슬롯을 600바퀴 함께 써도 메모리·탭·잠금 파일이 늘지 않는 오래 쓰기 시험도 있어요.
+- **CDP로 직접 다루는 평범한 Chrome.** Playwright·Puppeteer를 쓰지 않아요. 클릭과 키 입력은 `Input.dispatch*Event`로 보내서 페이지에는 진짜 이벤트로 보여요. Chrome을 `--enable-automation` 없이 띄워서 `navigator.webdriver`가 `false`이고, `Runtime.enable`을 쓰지 않으며, 페이지를 읽는 스크립트는 모두 페이지가 볼 수 없는 분리된 공간(isolated world)에서 돌아요. 스냅샷은 Shadow DOM 안쪽까지 읽어요. 흔한 자동화 흔적이 없다는 뜻이지, 접속 빈도나 IP로 막는 것까지 피한다는 뜻은 아니에요. 슬롯 9개가 동시에 구글 검색을 하면 로봇 확인이 떠요.
+- **흔한 고장에 버텨요.** 슬롯은 따로 떨어진 프로세스로 띄워서 VS Code나 Claude Code를 닫아도(줄기째 강제 종료돼도) 살아 있어요. 재부팅 뒤에는 슬롯 포트에 응답하는 Chrome에 다시 붙고, 작업표시줄 아이콘을 붙이기 전에 프로세스 번호를 다시 확인해요. 슬롯이 켜진 동안 Chrome이 업데이트되면(Windows는 `chrome.exe`를 바꿔치기해서 옛 Chrome이 화면 프로세스를 못 띄우고 새 탭이 빈 채로 멈춰요) 그 슬롯을 새 버전으로 다시 켜고 탭을 다시 열어요.
+- **에이전트끼리 협업.** `slot_send` / `slot_inbox`로 슬롯 번호와 에이전트 이름을 주소 삼아 메시지를 주고받아요. 디스크에 저장돼서 Chrome을 다시 켜도 남고, 기다리던 에이전트는 메시지가 오는 즉시 깨어나요.
+- **페이지 밖 브라우저 화면도 처리.** JavaScript 알림창은 알려 주고 `browser_dialog`로 처리해요. Windows에서는 권한 말풍선("이 기기의 다른 앱 및 서비스에 액세스", 알림, 위치 등)을 UI Automation으로 찾아 `browser_permission`으로 답해요. 에이전트 조작으로 뜨는 파일 선택·인쇄 창은 OS 창을 띄우지 않고 가로채요.
+
+## 빠른 시작
+
+```sh
+npm install -g cdpm-mcp
+cdpm install
+```
+
+Claude Code를 다시 시작하고, 예를 들어 *"1번 슬롯 창으로 켜서 github.com 열어줘"*라고 해 보세요.
+
+## 다른 브라우저 MCP와 비교
+
+| | CDPM | Playwright MCP | Chrome DevTools MCP |
+| --- | --- | --- | --- |
+| 브라우저 | 번호 슬롯 최대 30개, 모든 세션이 공유 | 서버 프로세스마다 하나 | 서버 프로세스마다 하나 |
+| 여러 세션이 한 브라우저를 함께 | 됨: 탭별 줄 세우기, 남의 탭 경고 | 목표가 아님 | 목표가 아님 |
+| 로그인 유지 | 됨, 슬롯마다 프로필 | 됨, 프로필 하나 (`--isolated`면 매번 새로) | 됨, 프로필 하나 (`--isolated`면 매번 새로) |
+| 조작 방식 | CDP 직접 | Playwright | Puppeteer |
+| 에이전트끼리 메시지 | 기본 제공 | 없음 | 없음 |
+| 슬롯별 작업표시줄 아이콘 | Windows 작업표시줄, macOS Dock | 없음 | 없음 |
+| 다른 브라우저 | Chrome만 | Chromium, Firefox, WebKit | Chrome만 |
+
+두 도구 모두 좋은 도구예요. Firefox·WebKit이 필요하면 Playwright MCP, 성능 기록이나 DevTools 패널이 필요하면 Chrome DevTools MCP가 더 맞아요. 두 도구 칸은 2026년 10월 기준 각 문서를 바탕으로 정리했어요.
+
+## 보안
+
+슬롯 포트는 `127.0.0.1`에서만 열리지만, 이 PC의 다른 프로그램은 누구나 접속해서 그 슬롯의 로그인된 세션으로 조작할 수 있어요. 켜진 슬롯은 잠기지 않은 브라우저처럼 다뤄 주세요. 믿을 수 없는 프로그램을 돌리는 동안에는 중요한 계정을 슬롯에 로그인해 두지 마세요. 꺼진 슬롯도 프로필은 디스크에 남아요(`cdpm purge N`으로 지워요).
+
+## 자세히
 
 - **순수 CDP**: Playwright, Puppeteer, 우회 패치를 쓰지 않아요. 디버깅 포트만 연 일반 Chrome에 진짜 입력 이벤트를 보내요.
 - **번호 슬롯**: 슬롯 N은 CDP 포트 `14049 + N`을 써요 (1번 = 14050 … 30번 = 14079). 흔히 쓰이는 9222와 부딪히지 않도록 고른 구간이고, 이 구간을 다른 프로그램이 쓰면 환경변수 `CDPM_PORT_BASE`로 시작 번호를 옮길 수 있어요. 슬롯마다 프로필 폴더가 따로 있어서 로그인이 슬롯별로 유지돼요. 범위 밖 포트는 다루지 않아요.
@@ -30,6 +71,12 @@
 - Google Chrome (자동으로 찾아요. Windows: 레지스트리 `App Paths` → 표준 설치 폴더. macOS: `/Applications` → `~/Applications` → Spotlight. Linux: `/usr/bin/google-chrome` → `google-chrome-stable` → `/opt/google/chrome/chrome`)
 
 ## 설치
+
+> **설치를 부탁받았다면 (Claude·AI 에이전트용)** 아래 순서대로 하세요.
+> 1. Node.js 22 이상과 Google Chrome이 있는지 확인해요. 없으면 사용자에게 알리고 멈춰요.
+> 2. `npm install -g cdpm-mcp@latest` 를 실행해요 (이미 설치돼 있어도 그대로 실행 → 최신으로 업데이트).
+> 3. `cdpm install` 을 실행해요 (`cdpm`을 못 찾으면 `node "$(npm root -g)/cdpm-mcp/dist/cli.js" install`). Claude Code 등록과 상태줄·규칙·서브에이전트·권한 설정을 한 번에 해요. 예전에 git으로 받아 등록해 둔 것도 새 위치로 바꿔요.
+> 4. Chrome 슬롯을 켜지 말고, 질문하거나 내부 설명을 덧붙이지 마세요. 성공하면 "CDPM <버전> 설치 완료. Claude Code를 다시 시작하면 쓸 수 있어요." 한 줄만 답해요 (버전은 `cdpm --version`). 실패하면 어느 단계에서 왜 실패했는지만 말해요.
 
 ```sh
 npm install -g cdpm-mcp

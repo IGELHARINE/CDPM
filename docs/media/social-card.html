@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CDPM social card</title>
+<style>
+  html, body { margin: 0; background: #0b0f17; }
+  #wrap { width: 1280px; }
+  #card {
+    width: 1280px; height: 640px; box-sizing: border-box; padding: 52px 60px 0;
+    background: radial-gradient(1100px 560px at 88% 12%, #1b2740 0%, #0b0f17 62%);
+    color: #e8ecf3; font-family: "Segoe UI", "Inter", system-ui, sans-serif; position: relative; overflow: hidden;
+  }
+  .top { display: grid; grid-template-columns: 560px 1fr; gap: 48px; height: 388px; }
+  .brand { font-size: 92px; font-weight: 800; letter-spacing: -4px; line-height: 1; margin: 0; }
+  .brand span { color: #7aa2ff; }
+  .tag { font-size: 28px; line-height: 1.3; margin: 20px 0 22px; font-weight: 600; color: #f4f6fb; letter-spacing: -0.3px; }
+  .pts { list-style: none; padding: 0; margin: 0; font-size: 20px; color: #b9c2d3; line-height: 1.7; }
+  .pts li::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #7aa2ff; margin-right: 13px; vertical-align: 3px; }
+
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; align-content: center; }
+  .win { background: #151b27; border: 1px solid #263048; border-radius: 9px; overflow: hidden; height: 104px; box-shadow: 0 8px 22px rgba(0,0,0,.35); }
+  .bar { height: 28px; display: flex; align-items: center; gap: 8px; padding: 0 10px; color: #fff; font-weight: 700; font-size: 14px; }
+  .num { width: 18px; height: 18px; border-radius: 5px; background: rgba(255,255,255,.22); display: grid; place-items: center; font-size: 12px; }
+  .body { padding: 10px 12px; }
+  .ln { height: 7px; border-radius: 4px; background: #2a3550; margin-bottom: 8px; }
+  .agent { display: inline-block; margin-top: 2px; font-size: 12px; color: #c9d3e6; background: #22304d; border-radius: 6px; padding: 2px 8px; font-family: Consolas, monospace; }
+
+  .band { position: absolute; left: 60px; right: 60px; top: 470px; }
+  .band-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px; }
+  .band-title { font-size: 17px; color: #c9d3e6; font-weight: 600; }
+  .band-meta { font-size: 15px; color: #8792a8; font-family: Consolas, "Cascadia Mono", monospace; }
+  .taskbar { position: relative; height: 66px; border-radius: 10px; background: linear-gradient(#232a38, #1c2230); border: 1px solid #2f3850; box-shadow: 0 10px 30px rgba(0,0,0,.45); display: flex; align-items: center; padding: 0 16px; }
+  .left { display: flex; align-items: center; gap: 12px; }
+  .start { width: 40px; height: 40px; border-radius: 8px; display: grid; place-items: center; }
+  .start i { display: grid; grid-template-columns: 11px 11px; gap: 2px; }
+  .start b { width: 11px; height: 11px; background: #4f9bff; border-radius: 1.5px; }
+  .search { width: 190px; height: 38px; border-radius: 19px; background: #2a3243; border: 1px solid #39435a; display: flex; align-items: center; gap: 9px; padding: 0 14px; color: #9aa5ba; font-size: 15px; }
+  .search svg { width: 15px; height: 15px; }
+  .apps { position: absolute; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; }
+  .tb { width: 50px; height: 54px; display: grid; place-items: center; position: relative; border-radius: 7px; }
+  .tb img { width: 34px; height: 34px; }
+  .tb::after { content: ""; position: absolute; bottom: 4px; width: 7px; height: 3px; border-radius: 2px; background: #8b95a9; }
+  .tb.on { background: rgba(255,255,255,.08); } .tb.on::after { width: 18px; background: #7aa2ff; }
+  .tray { margin-left: auto; display: flex; align-items: center; gap: 16px; color: #c9d3e6; }
+  .tray svg { width: 17px; height: 17px; }
+  .clock { text-align: right; font-size: 13px; line-height: 1.35; }
+</style>
+</head>
+<body>
+<div id="wrap"><div id="card">
+  <div class="top">
+    <div>
+      <h1 class="brand">CDP<span>M</span></h1>
+      <p class="tag">An MCP server that gives Claude Code agents real Chrome windows, addressed by slot number.</p>
+      <ul class="pts">
+        <li>Two sessions can drive one Chrome, a tab each</li>
+        <li>Input via CDP Input.*, no webdriver flag</li>
+        <li>Profiles persist across reboots and Chrome updates</li>
+      </ul>
+    </div>
+    <div class="grid" id="grid"></div>
+  </div>
+  <div class="band">
+    <div class="band-head">
+      <div class="band-title">Each slot gets its own numbered taskbar button on Windows and macOS</div>
+      <div class="band-meta">npm i -g cdpm-mcp &nbsp;·&nbsp; github.com/IGELHARINE/CDPM</div>
+    </div>
+    <div class="taskbar">
+      <div class="left">
+        <div class="start"><i><b></b><b></b><b></b><b></b></i></div>
+        <div class="search"><svg viewBox="0 0 16 16" fill="none" stroke="#9aa5ba" stroke-width="1.8"><circle cx="7" cy="7" r="5"/><path d="M11 11l3.5 3.5" stroke-linecap="round"/></svg>Search</div>
+      </div>
+      <div class="apps" id="tb"></div>
+      <div class="tray">
+        <svg viewBox="0 0 16 16" fill="none" stroke="#c9d3e6" stroke-width="1.6" stroke-linecap="round"><path d="M2.2 6.6a8.4 8.4 0 0 1 11.6 0"/><path d="M5 9.6a4.4 4.4 0 0 1 6 0"/><circle cx="8" cy="12.8" r="1.25" fill="#c9d3e6" stroke="none"/></svg>
+        <svg viewBox="0 0 16 16" fill="none" stroke="#c9d3e6" stroke-width="1.6" stroke-linejoin="round"><path d="M2 6h3l4-3v10l-4-3H2z"/><path d="M11.5 5.5a3.5 3.5 0 0 1 0 5" stroke-linecap="round"/></svg>
+        <div class="clock">10:42 PM<br>10/17/2026</div>
+      </div>
+    </div>
+  </div>
+</div></div>
+<script>
+  const colors = ['#2563EB','#C2410C','#15803D','#DC2626','#9333EA','#0E7490','#BE185D','#B45309','#0F766E'];
+  const agents = ['mail','search','report','shop','news','login','docs','price','merge'];
+  const widths = [[88,64],[70,92],[94,60],[66,84],[90,70],[76,58],[84,78],[62,90],[92,68]];
+  document.getElementById('grid').innerHTML = colors.map((c, i) => `
+    <div class="win">
+      <div class="bar" style="background:${c}"><span class="num">${i + 1}</span>Slot ${i + 1}</div>
+      <div class="body">
+        ${widths[i].map((w) => `<div class="ln" style="width:${w}%"></div>`).join('')}
+        <span class="agent">agent: ${agents[i]}</span>
+      </div>
+    </div>`).join('');
+  const shade = (hex, f) => '#' + [1, 3, 5].map((k) => Math.round(parseInt(hex.slice(k, k + 2), 16) * f).toString(16).padStart(2, '0')).join('');
+  const lift = (hex, f) => '#' + [1, 3, 5].map((k) => { const v = parseInt(hex.slice(k, k + 2), 16); return Math.round(v + (255 - v) * f).toString(16).padStart(2, '0'); }).join('');
+  const icon = (c, n) => `<svg viewBox="0 0 64 64" width="34" height="34">
+    <defs><linearGradient id="g${n}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}"/><stop offset="1" stop-color="${lift(c, .14)}"/></linearGradient>
+    <clipPath id="c${n}"><rect x="2" y="2" width="60" height="60" rx="12"/></clipPath></defs>
+    <g clip-path="url(#c${n})"><rect x="2" y="2" width="60" height="60" fill="url(#g${n})"/><rect x="2" y="2" width="60" height="15" fill="${shade(c, .72)}"/>
+    <rect x="2" y="17" width="60" height="1" fill="${lift(c, .35)}" opacity=".6"/></g>
+    <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="11.25" fill="none" stroke="${shade(c, .5)}" stroke-width="1.5"/>
+    <circle cx="11" cy="9.5" r="2.6" fill="#fff"/><circle cx="19" cy="9.5" r="2.6" fill="#fff"/><circle cx="27" cy="9.5" r="2.6" fill="#fff"/>
+    <text x="32" y="50" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-weight="700" font-size="28" fill="#fff">${n}</text></svg>`;
+  document.getElementById('tb').innerHTML = colors.map((c, i) => `<div class="tb${i === 2 ? ' on' : ''}">${icon(c, i + 1)}</div>`).join('');
+</script>
+</body>
+</html>

@@ -1,14 +1,55 @@
-# CDPM — CDP Manager
+# CDPM
 
 [한국어 README](README.ko.md)
 
-> **Asked to install this? (for Claude / AI agents)** Do these steps in order.
-> 1. Check that Node.js 22+ and Google Chrome are installed. If not, tell the user and stop.
-> 2. Run `npm install -g cdpm-mcp@latest` (also when already installed: this updates it).
-> 3. Run `cdpm install` (if `cdpm` isn't found: `node "$(npm root -g)/cdpm-mcp/dist/cli.js" install`). It registers CDPM with Claude Code and sets up the status line, rules, subagent and permissions; an older git-clone registration is switched to the new location.
-> 4. Do not launch any Chrome slot, ask questions, or explain internals. On success reply with exactly one line in the user's language, e.g. "CDPM <version> installed. Restart Claude Code to use it." (version: `cdpm --version`). If a step failed, say only which step and why.
+![CDPM: numbered Chrome slots for Claude Code agents](docs/media/social-card@2x.png)
 
-An MCP server that runs **Chrome slots 1–30** over the Chrome DevTools Protocol, so several Claude sessions and subagents can share and drive the same browsers just by number: *"turn on slot 3"*, *"check slot 3"*.
+CDPM is an MCP server that keeps up to 30 Chrome instances ("slots") on fixed debugging ports and lets any number of Claude Code sessions and subagents drive them by number: *"open slot 3"*, *"log in on slot 1, then fill the form in slot 2"*. Each slot is an ordinary Chrome with its own profile, so logins stick between runs and the browser is the same one you would use by hand.
+
+It grew out of running several Claude agents against logged-in web apps at once, where the hard parts were not clicking buttons but sharing browsers between sessions, keeping them alive, and noticing when Chrome itself got in the way.
+
+## Demo
+
+Nine subagents on slots 11-19 (headless). Slots 11-18 each read a GitHub repository page and send the numbers to slot 19 with `slot_send`; slot 19 waits on `slot_inbox`, writes a comparison table and opens it. Recorded over CDP from a real run: about 45 seconds of wall time, one frame per pass over the nine slots.
+
+![Nine slots working in parallel](docs/media/demo.gif)
+
+## What is different
+
+- **Shared, numbered browsers.** Slot *N* listens on port `14049 + N` and keeps its profile in its own folder. Sessions don't own a browser; they address a slot. Two sessions can work in the same slot on different tabs: commands are queued per tab, so two agents typing into one tab don't interleave. This is covered by an integration test and by a long test where three sessions share one slot for 600 rounds without memory, tab or lock-file growth.
+- **Plain Chrome over CDP.** No Playwright or Puppeteer. Clicks and keys are sent with `Input.dispatch*Event`, so pages receive trusted events. Chrome is started without `--enable-automation`, so `navigator.webdriver` stays `false`. CDPM never calls `Runtime.enable`, and every script it runs to read the page lives in an isolated world the page cannot see; snapshots pierce shadow roots. That removes the usual automation fingerprints. It does not get you past rate limits or IP reputation: nine slots searching Google at the same moment will still get a CAPTCHA.
+- **Survives the boring failures.** Slots are started detached, so closing VS Code or Claude Code (even with a process-tree kill) leaves them running. After a reboot, CDPM re-attaches to whatever Chrome answers on the slot ports and re-checks its process ID before touching taskbar icons. If Chrome updates itself while a slot is running (on Windows the update swaps `chrome.exe`, the old browser can no longer start renderers, and new tabs hang blank), CDPM restarts that slot on the new version and reopens its tabs.
+- **Agents can coordinate.** `slot_send` / `slot_inbox` deliver messages addressed by slot and agent name. They are stored on disk, so they survive a Chrome restart, and a waiting agent wakes as soon as one arrives.
+- **Browser UI the page can't see.** JavaScript dialogs are reported and answered with `browser_dialog`. On Windows, permission bubbles ("access other apps and services on this device", notifications, location) are detected through UI Automation and answered with `browser_permission`. File pickers and print dialogs triggered by an agent's action are intercepted instead of opening OS windows.
+
+## Quick start
+
+```sh
+npm install -g cdpm-mcp
+cdpm install
+```
+
+Restart Claude Code and ask for a slot, for example: *"Open slot 1 with a window and go to github.com."*
+
+## Compared with other browser MCP servers
+
+| | CDPM | Playwright MCP | Chrome DevTools MCP |
+| --- | --- | --- | --- |
+| Browsers | up to 30 numbered slots shared by every session | one per server process | one per server process |
+| Several sessions on one browser | yes: per-tab queues, ownership warnings | not a design goal | not a design goal |
+| Logins kept between runs | yes, one profile per slot | yes, one persistent profile (`--isolated` for a fresh one) | yes, one persistent profile (`--isolated` for a fresh one) |
+| Driven by | raw CDP | Playwright | Puppeteer |
+| Messages between agents | built in | no | no |
+| Per-slot taskbar icons | Windows taskbar, macOS Dock | no | no |
+| Other browsers | Chrome only | Chromium, Firefox, WebKit | Chrome only |
+
+The other two are good tools and the better choice if you need Firefox or WebKit (Playwright) or performance traces and DevTools panels (Chrome DevTools MCP). Their columns reflect their documentation as of October 2026.
+
+## Security
+
+Slot ports listen on `127.0.0.1` only, but any process on this machine can connect to them and act with that slot's logged-in sessions. Treat a running slot like an unlocked browser: don't leave sensitive accounts logged in on slots while running software you don't trust. Closed slots keep their profiles on disk (`cdpm purge N` deletes one).
+
+## Details
 
 - **Pure CDP.** No Playwright, no Puppeteer, no stealth patches. A normal Chrome with a debugging port, driven with real input events.
 - **Numbered slots.** Slot *N* uses CDP port `14049 + N` (slot 1 = 14050 … slot 30 = 14079) and its own profile folder. The range avoids the common default 9222; set `CDPM_PORT_BASE` to move it if something else uses those ports. Ports outside that range are not managed.
@@ -30,6 +71,12 @@ An MCP server that runs **Chrome slots 1–30** over the Chrome DevTools Protoco
 - Google Chrome (found automatically. Windows: registry `App Paths`, then standard install folders. macOS: `/Applications`, `~/Applications`, then Spotlight. Linux: `/usr/bin/google-chrome`, `google-chrome-stable`, `/opt/google/chrome/chrome`)
 
 ## Install
+
+> **Asked to install this? (for Claude / AI agents)** Do these steps in order.
+> 1. Check that Node.js 22+ and Google Chrome are installed. If not, tell the user and stop.
+> 2. Run `npm install -g cdpm-mcp@latest` (also when already installed: this updates it).
+> 3. Run `cdpm install` (if `cdpm` isn't found: `node "$(npm root -g)/cdpm-mcp/dist/cli.js" install`). It registers CDPM with Claude Code and sets up the status line, rules, subagent and permissions; an older git-clone registration is switched to the new location.
+> 4. Do not launch any Chrome slot, ask questions, or explain internals. On success reply with exactly one line in the user's language, e.g. "CDPM <version> installed. Restart Claude Code to use it." (version: `cdpm --version`). If a step failed, say only which step and why.
 
 ```sh
 npm install -g cdpm-mcp
