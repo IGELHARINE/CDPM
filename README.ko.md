@@ -1,6 +1,6 @@
 # CDPM
 
-[![npm](https://img.shields.io/npm/v/cdpm-mcp)](https://www.npmjs.com/package/cdpm-mcp) [![npm downloads](https://img.shields.io/npm/dm/cdpm-mcp)](https://www.npmjs.com/package/cdpm-mcp) [![License: MIT](https://img.shields.io/github/license/IGELHARINE/CDPM)](https://github.com/IGELHARINE/CDPM/blob/main/LICENSE) [![CDPM MCP server](https://glama.ai/mcp/servers/IGELHARINE/CDPM/badges/score.svg)](https://glama.ai/mcp/servers/IGELHARINE/CDPM)
+[![npm](https://img.shields.io/npm/v/cdpm-mcp)](https://www.npmjs.com/package/cdpm-mcp) [![npm downloads](https://img.shields.io/npm/dm/cdpm-mcp)](https://www.npmjs.com/package/cdpm-mcp) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/IGELHARINE/CDPM/blob/main/LICENSE) [![CDPM MCP server](https://glama.ai/mcp/servers/IGELHARINE/CDPM/badges/score.svg)](https://glama.ai/mcp/servers/IGELHARINE/CDPM)
 
 [English README](README.md)
 
