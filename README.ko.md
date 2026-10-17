@@ -2,7 +2,7 @@
 
 [English README](README.md)
 
-![CDPM: Claude Code 에이전트를 위한 번호 붙은 Chrome 슬롯](docs/media/social-card@2x.png)
+![CDPM: Claude Code 에이전트를 위한 번호 붙은 Chrome 슬롯](https://raw.githubusercontent.com/IGELHARINE/CDPM/main/docs/media/social-card@2x.png)
 
 CDPM은 Chrome을 최대 30개("슬롯") 정해진 디버깅 포트에 띄워 두고, 여러 Claude Code 세션과 서브에이전트가 번호만으로 조종하게 해 주는 MCP 서버예요. *"3번 켜줘"*, *"1번에서 로그인하고 2번에서 양식 채워줘"* 식으로 써요. 슬롯마다 프로필이 따로 있는 평범한 Chrome이라, 로그인이 다음에도 유지되고 사람이 쓰는 브라우저와 똑같아요.
 
@@ -12,7 +12,7 @@ CDPM은 Chrome을 최대 30개("슬롯") 정해진 디버깅 포트에 띄워 �
 
 헤드리스 슬롯 11~19번에 서브에이전트 9개. 11~18번은 각자 GitHub 저장소 페이지를 읽어 `slot_send`로 19번에 숫자를 보내고, 19번은 `slot_inbox`로 기다렸다가 비교표를 만들어 열어요. 실제 실행을 CDP로 녹화했고, 걸린 시간은 약 45초예요.
 
-![슬롯 9개가 동시에 일하는 모습](docs/media/demo.gif)
+![슬롯 9개가 동시에 일하는 모습](https://raw.githubusercontent.com/IGELHARINE/CDPM/main/docs/media/demo.gif)
 
 ## 무엇이 다른가
 

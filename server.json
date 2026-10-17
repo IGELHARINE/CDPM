@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.IGELHARINE/cdpm",
+  "description": "Lets many Claude Code sessions and subagents share numbered, logged-in Chrome instances over CDP",
+  "repository": {
+    "url": "https://github.com/IGELHARINE/CDPM",
+    "source": "github"
+  },
+  "version": "0.1.9",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "cdpm-mcp",
+      "version": "0.1.9",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

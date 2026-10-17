@@ -2,7 +2,7 @@
 
 [한국어 README](README.ko.md)
 
-![CDPM: numbered Chrome slots for Claude Code agents](docs/media/social-card@2x.png)
+![CDPM: numbered Chrome slots for Claude Code agents](https://raw.githubusercontent.com/IGELHARINE/CDPM/main/docs/media/social-card@2x.png)
 
 CDPM is an MCP server that keeps up to 30 Chrome instances ("slots") on fixed debugging ports and lets any number of Claude Code sessions and subagents drive them by number: *"open slot 3"*, *"log in on slot 1, then fill the form in slot 2"*. Each slot is an ordinary Chrome with its own profile, so logins stick between runs and the browser is the same one you would use by hand.
 
@@ -12,7 +12,7 @@ It grew out of running several Claude agents against logged-in web apps at once,
 
 Nine subagents on slots 11-19 (headless). Slots 11-18 each read a GitHub repository page and send the numbers to slot 19 with `slot_send`; slot 19 waits on `slot_inbox`, writes a comparison table and opens it. Recorded over CDP from a real run: about 45 seconds of wall time, one frame per pass over the nine slots.
 
-![Nine slots working in parallel](docs/media/demo.gif)
+![Nine slots working in parallel](https://raw.githubusercontent.com/IGELHARINE/CDPM/main/docs/media/demo.gif)
 
 ## What is different
 
