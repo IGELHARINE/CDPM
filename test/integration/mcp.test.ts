@@ -797,6 +797,39 @@ describe('CDPM MCP 통합', { timeout: 180_000 }, () => {
     }
   });
 
+  it('실행 중에 Chrome이 업데이트됐으면(설치 버전과 다름) 새 버전으로 다시 켜고 탭을 다시 엶, 같은 상황에서 반복하지 않음', async () => {
+    const slot = 9;
+    const port = Number(ENV.CDPM_TEST_PORT_BASE) + slot;
+    await call(a, 'browser_launch', { slot, agent: 'A', headless: true, url: site.url });
+    await call(a, 'browser_tab_new', { slot, agent: 'A', url: `${site.url}/page2` });
+    const pidOf = () => JSON.parse(fs.readFileSync(path.join(HOME, 'registry.json'), 'utf8')).slots[String(slot)]?.pid as number | undefined;
+    const before = pidOf();
+    const urls = async () => ((await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()) as { type: string; url: string }[])
+      .filter((t) => t.type === 'page').map((t) => t.url).sort();
+    const beforeUrls = await urls();
+    // 디스크의 Chrome이 다른 버전으로 바뀐 것처럼 꾸민 CDPM
+    const updated = new Client({ name: 'cdpm-test', version: '0' });
+    await updated.connect(new StdioClientTransport({ command: process.execPath, args: [CLI], env: { ...ENV, CDPM_TEST_INSTALLED_VERSION: '1.0.0.1' } }));
+    try {
+      const snap = await call(updated, 'browser_snapshot', { slot, agent: 'U' });
+      assert.equal(snap.isError, false, snap.text);
+      assert.match(snap.text, /updated while running \([\d.]+ → 1\.0\.0\.1\).*reopened 2 tab\(s\)/);
+      const after = pidOf();
+      assert.ok(after && after !== before, `다시 켜져야 함 (${before} → ${after})`);
+      assert.deepEqual(await urls(), beforeUrls, '열려 있던 탭 주소가 그대로 다시 열려야 함');
+      // 알림은 에이전트마다 한 번, 같은 버전 쌍으로는 다시 켜지 않음 (감시 주기 지나도)
+      await new Promise((r) => setTimeout(r, 12_000));
+      const again = await call(updated, 'browser_snapshot', { slot, agent: 'U' });
+      assert.doesNotMatch(again.text, /updated while running/);
+      assert.equal(pidOf(), after, '같은 상황에서 반복해서 다시 켜면 안 됨');
+      const other = await call(a, 'browser_snapshot', { slot, agent: 'A' });
+      assert.match(other.text, /updated while running/, '다른 세션의 에이전트에게도 한 번 알림');
+    } finally {
+      await updated.close();
+      await call(a, 'browser_close', { slot, agent: 'A' });
+    }
+  });
+
   it('종료 뒤에는 다시 켜지지 않음', async () => {
     const r = await call(a, 'browser_close', { slot: SLOT, agent: 'A' });
     assert.match(r.text, /Closed slot \d+ Chrome/);

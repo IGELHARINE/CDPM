@@ -254,6 +254,7 @@ Windows `%LOCALAPPDATA%\cdpm\`, macOS `~/Library/Application Support/cdpm/`, Lin
 - 실행 인자는 `--remote-debugging-port`, `--user-data-dir`, `--no-first-run`, `--no-default-browser-check`, `--window-name=N번`뿐이에요 (헤드리스 요청 시 `--headless`, 사용자가 프록시를 부탁했을 때만 `--proxy-server`와 `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` 추가). 헤드리스 Chrome은 User-Agent에 `HeadlessChrome`이 그대로 찍혀요.
 - 창 크기·위치·상태, 뷰포트, 확대 비율을 바꾸지 않아요. 페이지가 클릭 때문에 전체 화면이 되면 바로 해제해요.
 - `Runtime.enable`을 쓰지 않고, 판단용 스크립트는 전부 isolated world에서 실행해요.
+- 슬롯이 켜져 있는 동안 Chrome이 업데이트되면(Windows는 `chrome.exe`를 바꿔치기) 옛 버전 Chrome이 화면 프로세스를 띄우지 못해 새 탭이 빈 채로 멈춰요. CDPM이 실행 중인 버전과 설치된 버전을 비교해서(슬롯에 붙을 때, 10초마다) 다르면 그 슬롯을 새 버전으로 다시 켜고 탭을 순서대로 다시 열어요(로그인 유지, 프록시 슬롯은 알리기만).
 - Chrome 권한 요청 말풍선은 페이지가 아니라 브라우저 화면이라 스냅샷·스크린샷에 안 보이고 페이지 도구로 누를 수 없는데, 페이지는 그 답을 기다리며 멈춰요. Windows에서는 CDPM이 이걸 찾아서(슬롯 Chrome 창에 딸린 작은 창 중 제목에 탭의 사이트 주소가 들어간 것. 번역·비밀번호 저장 말풍선은 걸러지고 Chrome 언어와 상관없음) 결과 머리말로 알리고, `browser_wait` 중이면 뜨는 즉시 멈추고, Claude가 `browser_permission`으로 버튼을 눌러요(UI Automation. 창이 최소화되거나 가려져 있어도 됨). 사용자가 시키지 않은 카메라·마이크·위치 허용은 먼저 물어봐요.
 - 알림창(alert/confirm/prompt/beforeunload)을 정해진 규칙으로 자동 처리하지 않아요. 떠 있으면 알리고, Claude가 내용을 보고 `browser_dialog`로 직접 확인·취소해요. 사용자가 시키지 않은 되돌릴 수 없는 일(결제·삭제 등)을 확정하는 창일 때만 먼저 물어봐요.
 - 거부하는 동작: `mailto:`·`tel:`·앱 전용 주소로 클릭·이동·켜면서 열기·새 탭 열기(다른 프로그램 실행), `<select>` 클릭(목록 창), `Ctrl+C/X/V`·`Shift+Insert`(사용자 클립보드)

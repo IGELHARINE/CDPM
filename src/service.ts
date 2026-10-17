@@ -1,6 +1,7 @@
 // 슬롯 실행 보장, 탭 목록과 기록부 맞추기, 행동 기록.
 import { launchChrome, type LaunchOptions } from './chrome/launcher.js';
 import { describeProxy } from './chrome/proxy.js';
+import { installedChromeVersion, runningVersion } from './chrome/version.js';
 import { browserConnection, dropSlotConnections, hasLiveBrowserConnection, pageSession } from './cdp/sessions.js';
 import { listPages, probe, type PageTarget } from './cdp/targets.js';
 import { CdpmError } from './errors.js';
@@ -49,7 +50,7 @@ async function probeSure(slot: number) {
   return p;
 }
 
-export async function attachSlot(slot: number): Promise<void> {
+export async function attachSlot(slot: number, opts: { inLock?: boolean } = {}): Promise<void> {
   // 빠른 길: 이 프로세스의 연결이 살아 있고 기록된 Chrome도 살아 있으면 포트에 다시 묻지 않는다.
   const known = readRegistry().slots[String(slot)];
   // 기록된 번호는 이 프로세스가 확인한 것일 때만 믿는다 (다른 세션이 다시 켰거나 재부팅 뒤 옛 번호일 수 있음)
@@ -83,7 +84,9 @@ export async function attachSlot(slot: number): Promise<void> {
   }
   if (actual !== undefined) confirmedPid.set(slot, actual);
   applyTaskbar(slot, pid);
-  if (DOCK_SUPPORTED && !rec?.headless) void applyDock(slot, pid); // macOS만
+  if (DOCK_SUPPORTED && !rec?.headless) void applyDock(slot, pid);
+  // 실행 중에 Chrome이 업데이트됐으면(새 탭이 안 열림) 새 버전으로 다시 켠다
+  if (!opts.inLock && p.state === 'chrome') await restartIfUpdated(slot, p.version.Browser); // macOS만
 }
 
 function portBusy(slot: number, detail: string) {
@@ -100,7 +103,7 @@ async function launchSlotLocked(slot: number, agent: string, opts: LaunchOptions
   const p = await probeSure(slot);
   if (p.state === 'other') throw portBusy(slot, p.detail);
   if (p.state === 'chrome') {
-    await attachSlot(slot);
+    await attachSlot(slot, { inLock: true });
     return { launched: false };
   }
   // 방금 끈 Chrome은 포트를 닫은 뒤에도 잠깐 살아서 프로필을 붙잡고 있다. 그때 새로 켜면 새 Chrome이
@@ -138,6 +141,95 @@ export async function freeSlots(n: number): Promise<number[]> {
 /** 포트가 비어 있는 가장 작은 슬롯. 없으면 undefined. */
 export async function firstFreeSlot(): Promise<number | undefined> {
   return (await freeSlots(1))[0];
+}
+
+/** 실행 중 업데이트로 다시 켠 버전 쌍 (슬롯 → "옛>새"). 다시 켜도 버전이 안 맞으면 같은 쌍으로 또 켜지 않는다 (무한 반복 방지) */
+const updateRestarted = new Map<number, string>();
+
+/** 슬롯 Chrome(/json/version의 Browser)이 디스크에 설치된 Chrome과 버전이 다르면 두 버전. 알 수 없으면 undefined */
+export function staleVersion(browser: string | undefined): { running: string; installed: string } | undefined {
+  const running = runningVersion(browser);
+  const installed = installedChromeVersion();
+  return running && installed && running !== installed ? { running, installed } : undefined;
+}
+
+const isBlankUrl = (u: string) => !u || u === 'about:blank' || /^chrome:\/\/(newtab|new-tab-page)\/?$/.test(u) || u.startsWith('chrome-search://');
+
+async function setNotice(slot: number, text: string) {
+  await updateRegistry((r) => {
+    const s = r.slots[String(slot)];
+    if (s) s.notice = { text, at: nowIso() };
+  }).catch(() => undefined);
+}
+
+/**
+ * 슬롯 Chrome이 실행 중에 업데이트됐으면(디스크의 Chrome과 버전이 다름) 새 버전으로 다시 켠다. 옛 버전 본체는 바뀐
+ * 실행 파일로 렌더러를 띄우지 못해 새 탭·다른 사이트로 넘어간 탭이 빈 채로 멈추기 때문이다. 열려 있던 탭 주소를 순서대로
+ * 다시 열고, 창 모드·헤드리스는 그대로 둔다 (로그인은 프로필에 남음). 프록시 슬롯은 접속 정보가 기록에 없어 다시 켜지
+ * 않고 알리기만 한다. 다시 켰으면 true.
+ */
+export async function restartIfUpdated(slot: number, browser?: string): Promise<boolean> {
+  const first = staleVersion(browser);
+  if (!first) return false;
+  const pair = `${first.running}>${first.installed}`;
+  if (updateRestarted.get(slot) === pair) return false;
+  updateRestarted.set(slot, pair);
+  return withSlotLock(slot, async () => {
+    // 잠금을 기다리는 동안 다른 세션이 이미 다시 켰을 수 있다
+    const p = await probe(slot, 1500);
+    const stale = p.state === 'chrome' ? staleVersion(p.version.Browser) : undefined;
+    if (!stale) return false;
+    const rec = readRegistry().slots[String(slot)];
+    const from = `${stale.running} → ${stale.installed}`;
+    if (rec?.proxy) {
+      await setNotice(slot, `Slot ${slot} Chrome was updated while running (${from}), so new tabs and cross-site navigations may hang. It uses a proxy, so CDPM did not restart it: ask the user to restart it (browser_close, then browser_launch with the same proxy).`);
+      return false;
+    }
+    const tabs = await syncTabs(slot).catch(() => [] as TabView[]);
+    const urls = tabs.map((t) => t.url).filter((u) => !isBlankUrl(u));
+    const browserConn = await browserConnection(slot);
+    await browserConn.send('Browser.close', {}, 5000).catch(() => undefined);
+    for (let i = 0; i < 25 && (await probe(slot, 500)).state === 'chrome'; i++) await sleep(200);
+    // 포트가 닫혀도 프로세스는 잠깐 더 살아 프로필을 붙잡는다. 끝날 때까지 기다려야 다시 켤 수 있다.
+    for (let i = 0; rec?.pid && i < 50 && pidAlive(rec.pid); i++) await sleep(100);
+    await forgetSlot(slot);
+    const launched = await launchChrome(slot, { headless: rec?.headless, url: urls[0] });
+    const pid = launched.pid ?? (await browserPid(slot));
+    if (pid) confirmedPid.set(slot, pid);
+    const text = `Slot ${slot} Chrome had been updated while running (${from}), so new tabs could not load. CDPM restarted it on the new version` +
+      `${urls.length ? ` and reopened ${urls.length} tab(s)` : ''}. Logins are kept, but tab IDs changed and unsaved page input was lost.`;
+    await updateRegistry((r) => {
+      r.slots[String(slot)] = {
+        ...newSlotRecord(rec?.launchedBy ?? EXTERNAL, nowIso(), pid),
+        ...(rec?.headless ? { headless: true } : {}),
+        notice: { text, at: nowIso() },
+      };
+    });
+    const conn = await browserConnection(slot).catch(() => undefined);
+    for (const u of urls.slice(1)) await conn?.send('Target.createTarget', { url: u, background: true }).catch(() => undefined);
+    await syncTabs(slot).catch(() => undefined);
+    for (let i = 0; !rec?.headless && i < 50; i++) {
+      if (applyTaskbar(slot, pid) > 0) break;
+      await sleep(100);
+    }
+    return true;
+  });
+}
+
+/** 슬롯 감시: 슬롯마다 10초에 한 번 실행 중 업데이트를 확인한다 (설치 버전은 실행 파일이 바뀔 때만 다시 읽음). */
+const updateCheckedAt = new Map<number, number>();
+export async function checkUpdatedChrome(): Promise<number[]> {
+  const restarted: number[] = [];
+  const reg = readRegistry();
+  for (const key of Object.keys(reg.slots)) {
+    const slot = Number(key);
+    if (Date.now() - (updateCheckedAt.get(slot) ?? 0) < 10_000) continue;
+    updateCheckedAt.set(slot, Date.now());
+    const p = await probe(slot, 1500);
+    if (p.state !== 'chrome' || !staleVersion(p.version.Browser)) continue;
+    if (await restartIfUpdated(slot, p.version.Browser).catch(() => false)) restarted.push(slot);
+  }
+  return restarted;
 }
 
 /**
@@ -344,7 +436,9 @@ export function startSlotWatcher(intervalMs = 2000) {
   slotWatcher = setInterval(() => {
     if (busy) return;
     busy = true;
-    checkClosedWindows().catch(() => undefined).finally(() => (busy = false));
+    checkClosedWindows().catch(() => undefined)
+      .then(() => checkUpdatedChrome().catch(() => undefined))
+      .finally(() => (busy = false));
   }, intervalMs);
   slotWatcher.unref();
 }

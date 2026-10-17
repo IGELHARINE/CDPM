@@ -44,6 +44,8 @@ export interface SlotRecord {
   paused?: Stamp;
   summary?: SummaryStamp;
   last?: ActionStamp;     // 슬롯 안에서 마지막 행동 (팝업 귀속, 종료 경고용)
+  /** 에이전트들에게 한 번씩 알릴 일 (예: 업데이트 때문에 다시 켬). 10분 지나면 알리지 않는다 */
+  notice?: { text: string; at: string };
   /** 마지막으로 조작한 탭의 페이지 제목 (상태줄용) */
   title?: string;
   /** 마지막으로 조작한 탭의 CDP targetId (상태줄이 그 탭의 지금 제목을 읽을 때 씀) */

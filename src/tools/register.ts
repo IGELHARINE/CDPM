@@ -108,10 +108,23 @@ onAgentForgotten((agent) => {
   for (const m of [lastTabOf, lastTabList]) for (const k of m.keys()) if (k.endsWith(`:${agent}`)) m.delete(k);
 });
 
+/** 이미 보여준 슬롯 알림 (슬롯:에이전트:시각) */
+const shownNotices = new Set<string>();
+
 async function header(slot: number, agent: string, tabs: TabView[], opts: { executed?: string; warnings?: string[]; skipMessages?: boolean; compact?: boolean } = {}) {
   touchAgent(agent);
   const messages = opts.skipMessages ? [] : await takeUnread(slot, agent).catch(() => []);
   const warnings = [...(opts.warnings ?? [])];
+  // 슬롯 알림(업데이트 때문에 다시 켬 등)은 에이전트마다 한 번 (10분 안)
+  const notice = readRegistry().slots[String(slot)]?.notice;
+  if (notice && secondsSince(notice.at) < 600) {
+    const k = `${slot}:${agent}:${notice.at}`;
+    if (!shownNotices.has(k)) {
+      if (shownNotices.size > 500) shownNotices.clear();
+      shownNotices.add(k);
+      warnings.push(notice.text);
+    }
+  }
   for (const t of tabs) {
     const blocks = liveBlocks(t);
     if (blocks.length) warnings.push(`[${t.id}] blocking requests: ${blocks.map((b) => `${b.pattern} (${b.agent})`).join(', ')}`);

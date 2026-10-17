@@ -12,6 +12,9 @@ import { formatStatusline, isBlankPage } from '../../src/statusline.js';
 import { formatHeader } from '../../src/tools/format.js';
 import { ago, displayWidth, josa, shortUrl, truncate } from '../../src/util.js';
 import { wildcard } from '../../src/cdp/network.js';
+import { peProductVersion, runningVersion } from '../../src/chrome/version.js';
+import { findChrome } from '../../src/chrome/finder.js';
+import fs from 'node:fs';
 
 function luminance(hex: string) {
   const [r, g, b] = hexToRgb(hex).map((v) => {
@@ -293,5 +296,23 @@ describe('parseProxy', () => {
     assert.throws(() => parseProxy('ftp://1.2.3.4:21'));
     assert.throws(() => parseProxy('socks4://u:p@1.2.3.4:1080'));
     assert.equal(describeProxy(parseProxy('1.2.3.4:8080:kim:secret')), 'http://kim:***@1.2.3.4:8080');
+  });
+});
+
+describe('Chrome 버전 (실행 중 업데이트 감지)', () => {
+  it('실행 파일 버전 정보에서 ProductVersion을 읽음', () => {
+    const key = Buffer.from('ProductVersion\0', 'utf16le');
+    // 키(30바이트)가 8에서 시작해 38에서 끝나면, 값은 4바이트 경계인 40에서 시작한다 (사이 2바이트는 여백)
+    const buf = Buffer.concat([Buffer.alloc(8), key, Buffer.alloc(2), Buffer.from('155.0.8059.82\0', 'utf16le')]);
+    assert.equal(peProductVersion(buf), '155.0.8059.82');
+    assert.equal(peProductVersion(Buffer.from('nothing here')), undefined);
+  });
+  it('실행 중인 Chrome이 알려주는 이름에서 버전만', () => {
+    assert.equal(runningVersion('Chrome/154.0.8037.98'), '154.0.8037.98');
+    assert.equal(runningVersion('HeadlessChrome/155.0.8059.82'), '155.0.8059.82');
+    assert.equal(runningVersion(undefined), undefined);
+  });
+  it('설치된 chrome.exe에서 실제로 버전을 읽음 (Windows)', { skip: process.platform !== 'win32' }, () => {
+    assert.match(peProductVersion(fs.readFileSync(findChrome())) ?? '', /^\d+\.\d+\.\d+\.\d+$/);
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "cdpm-mcp",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "CDP Manager - an MCP server that runs Chrome slots 1-30 over CDP so multiple Claude agents can share and drive them by number",
   "type": "module",
   "bin": {
