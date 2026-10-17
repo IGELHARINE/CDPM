@@ -23,6 +23,21 @@ export function peProductVersion(buf: Buffer): string | undefined {
 let cache: { key: string; version?: string } | undefined;
 
 /**
+ * 설치된 Chrome 실행 파일의 "정체" (경로·파일 번호·크기·수정 시각). 파일 정보만 보므로 아주 가볍다.
+ * 바뀌었을 때만 버전을 다시 읽고 슬롯들과 비교하면 된다.
+ */
+export function installedChromeKey(): string | undefined {
+  if (process.env.CDPM_TEST_INSTALLED_VERSION) return `test|${process.env.CDPM_TEST_INSTALLED_VERSION}`;
+  try {
+    const exe = findChrome();
+    const st = fs.statSync(exe, { bigint: true });
+    return `${exe}|${st.ino}|${st.size}|${st.mtimeMs}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * 설치된 Chrome 버전. 실행 파일이 바뀔 때만 다시 읽는다. 바꿔치기는 이름만 바꾸는 것이라 수정 시각이 그대로일 수 있어서
  * 파일 번호(ino)·크기까지 함께 본다. 알 수 없으면 undefined (그때는 비교하지 않는다).
  */
@@ -30,8 +45,8 @@ export function installedChromeVersion(): string | undefined {
   if (process.env.CDPM_TEST_INSTALLED_VERSION) return process.env.CDPM_TEST_INSTALLED_VERSION; // 시험용
   try {
     const exe = findChrome();
-    const st = fs.statSync(exe, { bigint: true });
-    const key = `${exe}|${st.ino}|${st.size}|${st.mtimeMs}`;
+    const key = installedChromeKey();
+    if (!key) return undefined;
     if (cache?.key === key) return cache.version;
     let version: string | undefined;
     if (process.platform === 'win32') version = peProductVersion(fs.readFileSync(exe));

@@ -1,7 +1,7 @@
 // 슬롯 실행 보장, 탭 목록과 기록부 맞추기, 행동 기록.
 import { launchChrome, type LaunchOptions } from './chrome/launcher.js';
 import { describeProxy } from './chrome/proxy.js';
-import { installedChromeVersion, runningVersion } from './chrome/version.js';
+import { installedChromeKey, installedChromeVersion, runningVersion } from './chrome/version.js';
 import { browserConnection, dropSlotConnections, hasLiveBrowserConnection, pageSession } from './cdp/sessions.js';
 import { listPages, probe, type PageTarget } from './cdp/targets.js';
 import { CdpmError } from './errors.js';
@@ -216,19 +216,29 @@ export async function restartIfUpdated(slot: number, browser?: string): Promise<
   });
 }
 
-/** 슬롯 감시: 슬롯마다 10초에 한 번 실행 중 업데이트를 확인한다 (설치 버전은 실행 파일이 바뀔 때만 다시 읽음). */
-const updateCheckedAt = new Map<number, number>();
+/**
+ * 슬롯 감시: 10초마다 설치된 chrome.exe가 바뀌었는지만 본다 (파일 정보만, 슬롯에는 묻지 않음).
+ * 바뀌었을 때(그리고 이 CDPM이 처음 확인할 때 한 번)만 슬롯마다 버전을 물어 비교하고, 다르면 다시 켠다.
+ * 업데이트는 슬롯이 켜져 있는 동안에도 일어난다 (평소 쓰는 Chrome을 껐다 켜는 순간 같은 chrome.exe가 바뀜).
+ */
+let lastInstalledKey: string | undefined;
+let lastUpdateCheck = 0;
 export async function checkUpdatedChrome(): Promise<number[]> {
+  if (Date.now() - lastUpdateCheck < 10_000) return [];
+  lastUpdateCheck = Date.now();
+  const key = installedChromeKey();
+  if (!key || key === lastInstalledKey) return [];
   const restarted: number[] = [];
-  const reg = readRegistry();
-  for (const key of Object.keys(reg.slots)) {
-    const slot = Number(key);
-    if (Date.now() - (updateCheckedAt.get(slot) ?? 0) < 10_000) continue;
-    updateCheckedAt.set(slot, Date.now());
+  let unsure = false;
+  for (const s of Object.keys(readRegistry().slots)) {
+    const slot = Number(s);
     const p = await probe(slot, 1500);
+    if (p.state === 'slow') unsure = true; // 바쁜 슬롯은 다음 확인 때 다시
     if (p.state !== 'chrome' || !staleVersion(p.version.Browser)) continue;
     if (await restartIfUpdated(slot, p.version.Browser).catch(() => false)) restarted.push(slot);
   }
+  // 모든 슬롯을 확인했으면 이 실행 파일은 끝. 응답이 늦은 슬롯이 있었으면 다음 주기에 다시 비교한다
+  if (!unsure) lastInstalledKey = key;
   return restarted;
 }
 
