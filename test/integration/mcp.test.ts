@@ -762,6 +762,41 @@ describe('CDPM MCP 통합', { timeout: 180_000 }, () => {
     assert.equal(open, false, '20초 안에 포트가 닫혀야 함');
   });
 
+  it('기록부의 Chrome 번호가 틀려도(재부팅 뒤 옛 번호·다른 프로그램이 받은 번호) 저절로 고침', async () => {
+    const regFile = path.join(HOME, 'registry.json');
+    const ws = new WebSocket(((await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json()) as { webSocketDebuggerUrl: string }).webSocketDebuggerUrl);
+    await new Promise((r) => ws.addEventListener('open', r, { once: true }));
+    const info = await new Promise<{ processInfo: { type: string; id: number }[] }>((r) => {
+      ws.addEventListener('message', (m) => r(JSON.parse(String(m.data)).result), { once: true });
+      ws.send(JSON.stringify({ id: 1, method: 'SystemInfo.getProcessInfo', params: {} }));
+    });
+    ws.close();
+    const actual = info.processInfo.find((x) => x.type === 'browser')!.id;
+    const pidOf = () => JSON.parse(fs.readFileSync(regFile, 'utf8')).slots[String(SLOT)].pid as number;
+    const corrupt = () => {
+      const r = JSON.parse(fs.readFileSync(regFile, 'utf8'));
+      r.slots[String(SLOT)].pid = process.pid; // 살아 있지만 Chrome이 아닌 프로세스
+      fs.writeFileSync(regFile, JSON.stringify(r, null, 2));
+    };
+    assert.equal(pidOf(), actual);
+    const c = await connect();
+    try {
+      if (process.platform === 'win32') {
+        // 새로 켜진 CDPM(도구 호출 없음)의 아이콘 감시가 몇 초 안에 고친다
+        corrupt();
+        for (let i = 0; i < 40 && pidOf() !== actual; i++) await new Promise((r) => setTimeout(r, 250));
+        assert.equal(pidOf(), actual, '아이콘 감시가 고쳐야 함');
+      }
+      // 이미 연결해 둔 프로세스라도, 확인한 번호와 다르면 슬롯에 붙을 때 다시 확인해 고친다
+      corrupt();
+      const snap = await call(c, 'browser_snapshot', { slot: SLOT, agent: 'C' });
+      assert.equal(snap.isError, false, snap.text);
+      assert.equal(pidOf(), actual, '슬롯에 붙을 때 고쳐야 함');
+    } finally {
+      await c.close();
+    }
+  });
+
   it('종료 뒤에는 다시 켜지지 않음', async () => {
     const r = await call(a, 'browser_close', { slot: SLOT, agent: 'A' });
     assert.match(r.text, /Closed slot \d+ Chrome/);

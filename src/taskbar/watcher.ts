@@ -3,6 +3,7 @@ import { chromeArgs } from '../chrome/launcher.js';
 import { findChrome } from '../chrome/finder.js';
 import { readRegistry } from '../registry/store.js';
 import { portOf } from '../slots.js';
+import { pidAlive } from '../util.js';
 import { ensureIconFile, ICON_VERSION } from './icon.js';
 import { win32 } from './win32.js';
 
@@ -47,17 +48,54 @@ export function applyTaskbar(slot: number, pid: number | undefined): number {
 
 let timer: NodeJS.Timeout | undefined;
 
-export function startTaskbarWatcher() {
+/** 기록부 번호를 실제 Chrome 본체 번호로 확인·수정하는 함수 (service.verifySlotPid). 확인한 번호, 못 하면 undefined */
+export type PidVerifier = (slot: number) => Promise<number | undefined>;
+
+/** 이 프로세스가 Chrome에게 물어 맞다고 확인한 슬롯 번호 → Chrome 번호 */
+const verified = new Map<number, number>();
+/** 슬롯마다 마지막 확인 시각 (자주 묻지 않게) */
+const lastCheck = new Map<number, number>();
+const RECHECK_MS = 10_000;
+
+/**
+ * 2초마다 슬롯 창들에 아이콘을 맞춘다. 기록부의 번호는 재부팅 뒤 옛 번호로 남거나 다른 프로그램이 같은 번호를
+ * 받았을 수 있으므로, 이 프로세스에서 확인한 번호일 때만 적용한다. 확인 안 된 번호(처음 보거나 바뀌었거나 죽음)면
+ * Chrome에게 물어 고친 뒤(슬롯마다 10초에 한 번까지) 다음 주기부터 적용한다.
+ */
+export function startTaskbarWatcher(verify?: PidVerifier) {
   if (timer || !win32()) return;
+  const checking = new Set<number>();
+  const check = (slot: number) => {
+    if (!verify || checking.has(slot) || Date.now() - (lastCheck.get(slot) ?? 0) < RECHECK_MS) return;
+    checking.add(slot);
+    lastCheck.set(slot, Date.now());
+    verify(slot)
+      .then((pid) => (pid ? verified.set(slot, pid) : verified.delete(slot)))
+      .catch(() => undefined)
+      .finally(() => checking.delete(slot));
+  };
   timer = setInterval(() => {
     try {
       const reg = readRegistry();
-      for (const [slot, rec] of Object.entries(reg.slots)) applyTaskbar(Number(slot), rec.pid);
+      for (const [key, rec] of Object.entries(reg.slots)) {
+        const slot = Number(key);
+        if (verify && (!rec.pid || verified.get(slot) !== rec.pid || !pidAlive(rec.pid))) {
+          check(slot);
+          continue;
+        }
+        applyTaskbar(slot, rec.pid);
+      }
     } catch {
       // 다음 주기에 다시 시도
     }
   }, INTERVAL_MS);
   timer.unref();
+}
+
+/** 시험용: 확인 기록을 비운다 */
+export function resetPidVerification() {
+  verified.clear();
+  lastCheck.clear();
 }
 
 export function stopTaskbarWatcher() {

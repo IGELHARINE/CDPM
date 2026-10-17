@@ -13,6 +13,9 @@ import { ago, nowIso, pidAlive, secondsSince, sleep } from './util.js';
 
 export const EXTERNAL = '(external)';
 
+/** 이 프로세스가 Chrome에게 직접 물어(또는 직접 띄워) 맞다고 확인한 슬롯 → Chrome 본체 번호 */
+const confirmedPid = new Map<number, number>();
+
 /** 이 프로세스가 직접 만든 탭 → 만든 에이전트. 기록부에 처음 올릴 때 openedBy로 쓴다. */
 const createdBy = new Map<string, string>();
 const createdAt = new Map<string, number>();
@@ -49,7 +52,8 @@ async function probeSure(slot: number) {
 export async function attachSlot(slot: number): Promise<void> {
   // 빠른 길: 이 프로세스의 연결이 살아 있고 기록된 Chrome도 살아 있으면 포트에 다시 묻지 않는다.
   const known = readRegistry().slots[String(slot)];
-  if (known?.pid && pidAlive(known.pid) && hasLiveBrowserConnection(slot)) return;
+  // 기록된 번호는 이 프로세스가 확인한 것일 때만 믿는다 (다른 세션이 다시 켰거나 재부팅 뒤 옛 번호일 수 있음)
+  if (known?.pid && confirmedPid.get(slot) === known.pid && pidAlive(known.pid) && hasLiveBrowserConnection(slot)) return;
   const p = await probeSure(slot);
   if (p.state === 'other') throw portBusy(slot, p.detail);
   if (p.state === 'free') {
@@ -58,19 +62,26 @@ export async function attachSlot(slot: number): Promise<void> {
   }
   const rec = readRegistry().slots[String(slot)];
   let pid = rec?.pid;
-  if (!pid || !pidAlive(pid)) {
-    // 기록이 없거나 기록된 Chrome이 이미 죽었으면, 포트에 응답하는 Chrome이 이 PC의 프로세스인지 확인한다.
+  // 기록된 번호가 살아 있어도 지금 포트의 Chrome 본체가 맞는지 Chrome에게 직접 묻는다 (이 프로세스에서 슬롯마다 한 번).
+  // 재부팅 뒤 Windows가 Chrome을 다시 띄우면 번호가 바뀌고, 옛 번호를 다른 프로그램이 받을 수도 있다.
+  const actual = await browserPid(slot);
+  if (actual !== undefined && !pidAlive(actual)) {
     // SSH 터널(ssh -L 9222:...)처럼 다른 PC의 Chrome이 이 포트로 보이는 경우 그 PID는 이 PC에 없다.
-    pid = await browserPid(slot);
-    if (!pid || !pidAlive(pid)) {
-      await forgetSlot(slot);
-      throw new CdpmError(`Slot ${slot} port (${portOf(slot)}) is connected to a Chrome on another machine (SSH tunnel, etc.). Close that connection or use another slot.`);
-    }
+    await forgetSlot(slot);
+    throw new CdpmError(`Slot ${slot} port (${portOf(slot)}) is connected to a Chrome on another machine (SSH tunnel, etc.). Close that connection or use another slot.`);
+  }
+  if (actual !== undefined && actual !== pid) {
+    pid = actual;
     await updateRegistry((r) => {
       const s = (r.slots[String(slot)] ??= newSlotRecord(EXTERNAL, nowIso()));
-      s.pid = pid;
+      s.pid = actual;
     });
+  } else if (!pid || !pidAlive(pid)) {
+    // Chrome에게 물을 수 없었고 기록도 쓸 수 없음
+    await forgetSlot(slot);
+    throw new CdpmError(`Slot ${slot} port (${portOf(slot)}) answers, but its Chrome process could not be identified. Try again.`);
   }
+  if (actual !== undefined) confirmedPid.set(slot, actual);
   applyTaskbar(slot, pid);
   if (DOCK_SUPPORTED && !rec?.headless) void applyDock(slot, pid); // macOS만
 }
@@ -99,6 +110,7 @@ async function launchSlotLocked(slot: number, agent: string, opts: LaunchOptions
   await forgetSlot(slot); // 남아 있던 죽은 기록 정리
   const launched = await launchChrome(slot, opts);
   const pid = launched.pid ?? (await browserPid(slot));
+  if (pid) confirmedPid.set(slot, pid);
   const pages = await listPages(slot).catch(() => [] as PageTarget[]);
   for (const page of pages) markCreated(page.id, agent);
   // macOS만: Dock 아이콘을 슬롯 아이콘으로 (첫 빈 탭이 있을 때 그림을 그려 저장해 둔다)
@@ -126,6 +138,24 @@ export async function freeSlots(n: number): Promise<number[]> {
 /** 포트가 비어 있는 가장 작은 슬롯. 없으면 undefined. */
 export async function firstFreeSlot(): Promise<number | undefined> {
   return (await freeSlots(1))[0];
+}
+
+/**
+ * 기록부의 Chrome 번호가 지금 포트의 Chrome 본체와 같은지 확인하고, 다르면 고친다. 확인한 번호를 돌려준다.
+ * 포트가 비어 있거나(Chrome 꺼짐) 확인할 수 없으면 undefined (기록은 그대로).
+ */
+export async function verifySlotPid(slot: number): Promise<number | undefined> {
+  if (!readRegistry().slots[String(slot)]) return undefined;
+  const p = await probe(slot, 1500);
+  if (p.state !== 'chrome') return undefined;
+  const actual = await browserPid(slot);
+  if (!actual || !pidAlive(actual)) return undefined;
+  await updateRegistry((r) => {
+    const s = r.slots[String(slot)];
+    if (s && s.pid !== actual) s.pid = actual;
+  });
+  confirmedPid.set(slot, actual);
+  return actual;
 }
 
 async function browserPid(slot: number): Promise<number | undefined> {

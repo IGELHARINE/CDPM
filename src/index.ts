@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { autoSetupOnce } from './auto-setup.js';
 import { isClaudeCode, setClientName } from './client-info.js';
 import { startSweeper } from './cdp/sessions.js';
-import { startSlotWatcher } from './service.js';
+import { startSlotWatcher, verifySlotPid } from './service.js';
 import { startTaskbarWatcher } from './taskbar/watcher.js';
 import { registerTools, serverInstructions } from './tools/register.js';
 import { VERSION } from './version.js';
@@ -28,7 +28,7 @@ export async function startServer() {
   };
   registerTools(server);
   await server.connect(new StdioServerTransport());
-  startTaskbarWatcher();
+  startTaskbarWatcher(verifySlotPid);
   startSlotWatcher();
   startSweeper();
 }
