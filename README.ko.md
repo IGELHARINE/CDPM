@@ -1,5 +1,7 @@
 # CDPM
 
+[![npm](https://img.shields.io/npm/v/cdpm-mcp)](https://www.npmjs.com/package/cdpm-mcp) [![npm downloads](https://img.shields.io/npm/dm/cdpm-mcp)](https://www.npmjs.com/package/cdpm-mcp) [![License: MIT](https://img.shields.io/github/license/IGELHARINE/CDPM)](https://github.com/IGELHARINE/CDPM/blob/main/LICENSE) [![CDPM MCP server](https://glama.ai/mcp/servers/IGELHARINE/CDPM/badges/score.svg)](https://glama.ai/mcp/servers/IGELHARINE/CDPM)
+
 [English README](README.md)
 
 ![CDPM: Claude Code 에이전트를 위한 번호 붙은 Chrome 슬롯](https://raw.githubusercontent.com/IGELHARINE/CDPM/main/docs/media/social-card@2x.png)
