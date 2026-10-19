@@ -242,7 +242,7 @@ Data lives in `%LOCALAPPDATA%\cdpm\` on Windows `~/Library/Application Support/c
 
 ## Verification
 
-58 unit and 40 integration tests (`npm test`, `npm run test:integration`, real Chrome on test ports 29222+). Long-running checks (`npm run test:long`, ~20 min): 4,000 rounds on an SPA that replaces its DOM, with a new agent name every round, kept the CDPM server heap within a fixed band (26–39 MB, no upward trend) and the page at 1,421 DOM nodes / 0.8 MB JS heap; 3 sessions sharing one slot for 600 rounds each (1,800 tabs opened and closed, the slot restarted 3 times) stayed at ~20 MB heap per session with no lock files or tabs left behind. A 15-subagent, 30-slot concurrent run confirmed that all 30 windows' position/size/state and all 52 tabs' viewport (`innerWidth×innerHeight`) and zoom were unchanged.
+62 unit and 42 integration tests (`npm test`, `npm run test:integration`, real Chrome on test ports 29222+). Long-running checks (`npm run test:long`, ~20 min): 4,000 rounds on an SPA that replaces its DOM, with a new agent name every round, kept the CDPM server heap within a fixed band (26–39 MB, no upward trend) and the page at 1,421 DOM nodes / 0.8 MB JS heap; 3 sessions sharing one slot for 600 rounds each (1,800 tabs opened and closed, the slot restarted 3 times) stayed at ~20 MB heap per session with no lock files or tabs left behind. A 15-subagent, 30-slot concurrent run confirmed that all 30 windows' position/size/state and all 52 tabs' viewport (`innerWidth×innerHeight`) and zoom were unchanged.
 
 ## License
 
