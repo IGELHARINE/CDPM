@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { wildcard, type BlockRule, type NetEntry } from '../cdp/network.js';
 import { browserConnection, forgetSlotVisibility, knownDialog, onAgentForgotten, pageSession, touchAgent, type DialogInfo, type PageSession } from '../cdp/sessions.js';
 import { ensureDownloadTracking, waitDownload } from '../cdp/downloads.js';
-import { probe } from '../cdp/targets.js';
+import { listPrintPreviews, probe } from '../cdp/targets.js';
 import { bubbleDetail, bubbleLine, hostsOf, permissionBubbles, pressBubble } from '../chrome/bubbles.js';
 import { describeProxy, parseProxy, type ProxySpec } from '../chrome/proxy.js';
 import { isClaudeCode } from '../client-info.js';
@@ -131,6 +131,12 @@ async function header(slot: number, agent: string, tabs: TabView[], opts: { exec
   }
   // Chrome 권한 요청 말풍선 (페이지 밖 브라우저 화면이라 스냅샷에 안 보인다)
   for (const b of permissionBubbles(slot, hostsOf(tabs.map((t) => t.url)))) warnings.push(bubbleLine(b, await bubbleDetail(b)));
+  // 인쇄 미리보기 (탭 목록에는 안 넣는다). 어느 탭 것인지는 제목으로 맞춘다
+  for (const p of await listPrintPreviews(slot).catch(() => [])) {
+    const owners = tabs.filter((t) => t.title === p.title);
+    const where = owners.length === 1 ? `tab ${owners[0].no} [${owners[0].id}]` : `"${truncate(p.title, 40)}"`;
+    warnings.push(`Print dialog open on ${where}. ${act.PRINT_NOTE}`);
+  }
   const dialogs = dialogsOf(slot, tabs);
   // 탭 목록이 이 에이전트가 지난번에 본 것과 같고 경고·알림창·메시지도 없으면 한 줄로 (읽을 양을 줄여 다음 판단이 빨라지게)
   const key = `${slot}:${agent}`;
@@ -213,8 +219,8 @@ async function onTab(args: TabCall, kind: TabKind, action: string | null, fn: (s
     } catch (e) {
       // 멈춤: 하던 조작을 그 자리에서 그만뒀다 → 어떻게 기다릴지 함께 알린다
       if (e instanceof act.PausedInterrupt) return textResult(`${e.message}\n${pausedRefusal(slot) ?? ''}`, true);
-      // 행동 도중 알림창이 뜬 것은 실패가 아니다 (클릭은 이루어졌음).
-      if (!(e instanceof act.DialogInterrupt)) throw e;
+      // 행동 도중 알림창·인쇄 미리보기가 뜬 것은 실패가 아니다 (클릭은 이루어졌음).
+      if (!(e instanceof act.DialogInterrupt || e instanceof act.PrintInterrupt)) throw e;
       out = { text: `Action done. Then: ${e.message}` };
     }
     tabs = await syncTabs(slot).catch(() => tabs);
@@ -786,40 +792,51 @@ export function registerTools(server: McpServer) {
     // 기다리는 동안 새로 뜬 권한 말풍선도 바로 알린다 (이미 떠 있던 것은 머리말로 이미 알렸으니 제외)
     const hosts = hostsOf((await syncTabs(args.slot).catch(() => [])).map((t) => t.url));
     const known = new Set(permissionBubbles(args.slot, hosts).map((b) => `${b.key}|${b.title}`));
+    // 새로 뜬 인쇄 미리보기 (stop은 동기라서 따로 살펴 둔다)
+    const printedBefore = new Set((await listPrintPreviews(args.slot).catch(() => [])).map((p) => p.id));
+    const printing = new Set<string>();
+    const printWatch = setInterval(() => {
+      void listPrintPreviews(args.slot).then((l) => { for (const p of l) if (!printedBefore.has(p.id)) printing.add(p.id); }, () => undefined);
+    }, 1000);
     // 다른 에이전트가 메시지를 보내면 기다리기를 바로 멈춘다 (메시지는 결과 머리말로 전달됨)
     const stop: act.StopCheck = () => {
       if (pausedInfo(args.slot)) return pausedRefusal(args.slot);
       if (hasUnread(args.slot, agent)) return 'Stopped waiting: a new message arrived (see it in the header above and continue).';
       const fresh = permissionBubbles(args.slot, hosts).find((b) => !known.has(`${b.key}|${b.title}`));
-      return fresh ? `Stopped waiting: Chrome showed a permission bubble "${fresh.title}" (see the header above; answer it with browser_permission).` : undefined;
+      if (fresh) return `Stopped waiting: Chrome showed a permission bubble "${fresh.title}" (see the header above; answer it with browser_permission).`;
+      return printing.size ? 'Stopped waiting: the page opened a print dialog (see the header above).' : undefined;
     };
-    if (args.response !== undefined) {
-      if (!args.response.trim()) throw new CdpmError('Put part of the URL to wait for in response (e.g. "/api/search").');
-      // 이 에이전트가 이 탭에서 마지막으로 조작한 뒤(2분 안)의 요청부터. 조작 기록이 없으면 지금부터.
-      const last = s.actionStartedAt.get(agent);
-      const since = last && Date.now() - last < 120_000 ? last : Date.now();
-      try {
-        const e = await act.waitForResponse(s, args.response, since, args.timeout ?? 30, stop);
-        if (e.failed) return { text: `Response failed: ${netLine(e)}` };
-        return { text: `Response received: ${netLine(e)}\nURL: ${decodeUrl(e.url).slice(0, 300)}\n\n[Response body]\n${await responseBody(s, e)}` };
-      } catch (err) {
-        if (err instanceof act.WaitStopped) return { text: err.message };
-        throw err;
+    try {
+      if (args.response !== undefined) {
+        if (!args.response.trim()) throw new CdpmError('Put part of the URL to wait for in response (e.g. "/api/search").');
+        // 이 에이전트가 이 탭에서 마지막으로 조작한 뒤(2분 안)의 요청부터. 조작 기록이 없으면 지금부터.
+        const last = s.actionStartedAt.get(agent);
+        const since = last && Date.now() - last < 120_000 ? last : Date.now();
+        try {
+          const e = await act.waitForResponse(s, args.response, since, args.timeout ?? 30, stop);
+          if (e.failed) return { text: `Response failed: ${netLine(e)}` };
+          return { text: `Response received: ${netLine(e)}\nURL: ${decodeUrl(e.url).slice(0, 300)}\n\n[Response body]\n${await responseBody(s, e)}` };
+        } catch (err) {
+          if (err instanceof act.WaitStopped) return { text: err.message };
+          throw err;
+        }
       }
+      if (args.enabled) return { text: await act.waitForEnabled(s, agent, args.enabled, args.timeout ?? 30, stop) };
+      if (args.network_idle) return { text: await act.waitNetworkIdle(s, args.timeout ?? 15, 500, stop) };
+      if (args.text) return { text: await act.waitForText(s, args.text, args.timeout ?? 30, stop) };
+      if (args.url !== undefined) return { text: await act.waitForUrl(s, args.url || undefined, args.timeout ?? 30, stop) };
+      if (args.gone) return { text: await act.waitForGone(s, args.gone, args.timeout ?? 30, stop) };
+      const sec = args.seconds ?? 1;
+      const until = Date.now() + sec * 1000;
+      while (Date.now() < until) {
+        const why = stop();
+        if (why) return { text: why };
+        await sleep(Math.min(100, until - Date.now()));
+      }
+      return { text: `Waited ${sec}s.` };
+    } finally {
+      clearInterval(printWatch);
     }
-    if (args.enabled) return { text: await act.waitForEnabled(s, agent, args.enabled, args.timeout ?? 30, stop) };
-    if (args.network_idle) return { text: await act.waitNetworkIdle(s, args.timeout ?? 15, 500, stop) };
-    if (args.text) return { text: await act.waitForText(s, args.text, args.timeout ?? 30, stop) };
-    if (args.url !== undefined) return { text: await act.waitForUrl(s, args.url || undefined, args.timeout ?? 30, stop) };
-    if (args.gone) return { text: await act.waitForGone(s, args.gone, args.timeout ?? 30, stop) };
-    const sec = args.seconds ?? 1;
-    const until = Date.now() + sec * 1000;
-    while (Date.now() < until) {
-      const why = stop();
-      if (why) return { text: why };
-      await sleep(Math.min(100, until - Date.now()));
-    }
-    return { text: `Waited ${sec}s.` };
   }));
 
   server.registerTool('browser_eval', {
@@ -993,6 +1010,7 @@ const INSTRUCTIONS_CLAUDE_CODE = `CDPM: controls Chrome slots 1-30 over CDP. Slo
 - Never change window size/position or viewport. Use browser_tab_select (changes the tab the user sees) only when the user wants it.
 - "Pause N" → slot_pause; "resume" → slot_resume. Actions on a paused slot are refused: its agent must not operate it and waits with slot_inbox(wait=600); on the resume message it re-reads with browser_snapshot and continues (never resumes on its own).
 - When a dialog (alert/confirm/prompt/beforeunload) appears, judge from its content and accept/dismiss it yourself with browser_dialog. Ask the user only when it confirms an irreversible action they didn't request (payment, deletion, etc.).
+- If a page opens Chrome's print dialog, the header warns; CDPM does not close it (that tab is frozen until a person does). Tell the user it is open and on which slot and tab, and wait. For a PDF use browser_pdf.
 - Chrome permission bubbles ("site wants to access other apps and services on this device", notifications, location, camera, mic…) are browser UI the page can wait on; the header warns when one is open (Windows). Answer it yourself with browser_permission when the task needs it (e.g. a work site asking to reach a local app). Ask the user before allowing camera, microphone or location they didn't ask for.`;
 
 /** Claude Code가 아닌 클라이언트(Cursor, Claude Desktop 등)용: Agent 도구·run_in_background·cdpm-browser처럼 Claude Code에만 있는 말을 뺀다. */

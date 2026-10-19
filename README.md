@@ -22,7 +22,7 @@ Nine subagents on slots 11-19 (headless). Slots 11-18 each read a GitHub reposit
 - **Plain Chrome over CDP.** No Playwright or Puppeteer. Clicks and keys are sent with `Input.dispatch*Event`, so pages receive trusted events. Chrome is started without `--enable-automation`, so `navigator.webdriver` stays `false`. CDPM never calls `Runtime.enable`, and every script it runs to read the page lives in an isolated world the page cannot see; snapshots pierce shadow roots. That removes the usual automation fingerprints. It does not get you past rate limits or IP reputation: nine slots searching Google at the same moment will still get a CAPTCHA.
 - **Survives the boring failures.** Slots are started detached, so closing VS Code or Claude Code (even with a process-tree kill) leaves them running. After a reboot, CDPM re-attaches to whatever Chrome answers on the slot ports and re-checks its process ID before touching taskbar icons. If Chrome updates itself while a slot is running (on Windows the update swaps `chrome.exe`, the old browser can no longer start renderers, and new tabs hang blank), CDPM restarts that slot on the new version and reopens its tabs.
 - **Agents can coordinate.** `slot_send` / `slot_inbox` deliver messages addressed by slot and agent name. They are stored on disk, so they survive a Chrome restart, and a waiting agent wakes as soon as one arrives.
-- **Browser UI the page can't see.** JavaScript dialogs are reported and answered with `browser_dialog`. On Windows, permission bubbles ("access other apps and services on this device", notifications, location) are detected through UI Automation and answered with `browser_permission`. File pickers and print dialogs triggered by an agent's action are intercepted instead of opening OS windows.
+- **Browser UI the page can't see.** JavaScript dialogs are reported and answered with `browser_dialog`. On Windows, permission bubbles ("access other apps and services on this device", notifications, location) are detected through UI Automation and answered with `browser_permission`. File pickers triggered by an agent's action are intercepted instead of opening OS windows; a print dialog the page opens is reported right away (the page itself is never modified).
 
 ## Quick start
 
@@ -225,10 +225,10 @@ Data lives in `%LOCALAPPDATA%\cdpm\` on Windows `~/Library/Application Support/c
 
 ## What CDPM does not do / refuses
 
-- No user-agent or fingerprint changes, device emulation or Chrome patching, and no page script changes except the print guard below.
+- No user-agent or fingerprint changes, device emulation or Chrome patching, and no page script changes.
 - Things you click yourself open as usual. Only while an agent action runs, CDPM keeps OS windows from appearing:
   - File pickers are intercepted however the action opens them (click, Enter on a file input, form submit), with a hint to use `browser_upload`.
-  - `window.print()` would open print preview and freeze the tab (it cannot be closed over CDP), so the page's `print` is disabled for the duration of the action only, reported, and restored right after. Use `browser_pdf` for a PDF.
+  - `window.print()` opens print preview, and the tab stops answering input until it is closed. CDPM does not override the page's `print` (a page could see that) and does not close the preview. When one opens during an action, the action returns at once with a note, and the header names the tab while it stays open, so the agent can tell the user. `browser_wait` stops when one appears. Use `browser_pdf` for a PDF.
   - Date, time and color inputs are not clicked (they open a picker); `browser_type` sets their value (`#ff0000` for colors).
   - Browser shortcuts such as `Ctrl+S`/`Ctrl+O`/`Ctrl+P` sent over CDP do not trigger Chrome's save/open/print windows.
 - Known limits: a button whose JavaScript navigates to an external-program scheme (`mailto:` etc.) is not caught in advance (links are); HTTP authentication prompts cannot be filled by an agent.

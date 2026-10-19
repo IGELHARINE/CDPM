@@ -22,7 +22,7 @@ CDPM은 Chrome을 최대 30개("슬롯") 정해진 디버깅 포트에 띄워 �
 - **CDP로 직접 다루는 평범한 Chrome.** Playwright·Puppeteer를 쓰지 않아요. 클릭과 키 입력은 `Input.dispatch*Event`로 보내서 페이지에는 진짜 이벤트로 보여요. Chrome을 `--enable-automation` 없이 띄워서 `navigator.webdriver`가 `false`이고, `Runtime.enable`을 쓰지 않으며, 페이지를 읽는 스크립트는 모두 페이지가 볼 수 없는 분리된 공간(isolated world)에서 돌아요. 스냅샷은 Shadow DOM 안쪽까지 읽어요. 흔한 자동화 흔적이 없다는 뜻이지, 접속 빈도나 IP로 막는 것까지 피한다는 뜻은 아니에요. 슬롯 9개가 동시에 구글 검색을 하면 로봇 확인이 떠요.
 - **흔한 고장에 버텨요.** 슬롯은 따로 떨어진 프로세스로 띄워서 VS Code나 Claude Code를 닫아도(줄기째 강제 종료돼도) 살아 있어요. 재부팅 뒤에는 슬롯 포트에 응답하는 Chrome에 다시 붙고, 작업표시줄 아이콘을 붙이기 전에 프로세스 번호를 다시 확인해요. 슬롯이 켜진 동안 Chrome이 업데이트되면(Windows는 `chrome.exe`를 바꿔치기해서 옛 Chrome이 화면 프로세스를 못 띄우고 새 탭이 빈 채로 멈춰요) 그 슬롯을 새 버전으로 다시 켜고 탭을 다시 열어요.
 - **에이전트끼리 협업.** `slot_send` / `slot_inbox`로 슬롯 번호와 에이전트 이름을 주소 삼아 메시지를 주고받아요. 디스크에 저장돼서 Chrome을 다시 켜도 남고, 기다리던 에이전트는 메시지가 오는 즉시 깨어나요.
-- **페이지 밖 브라우저 화면도 처리.** JavaScript 알림창은 알려 주고 `browser_dialog`로 처리해요. Windows에서는 권한 말풍선("이 기기의 다른 앱 및 서비스에 액세스", 알림, 위치 등)을 UI Automation으로 찾아 `browser_permission`으로 답해요. 에이전트 조작으로 뜨는 파일 선택·인쇄 창은 OS 창을 띄우지 않고 가로채요.
+- **페이지 밖 브라우저 화면도 처리.** JavaScript 알림창은 알려 주고 `browser_dialog`로 처리해요. Windows에서는 권한 말풍선("이 기기의 다른 앱 및 서비스에 액세스", 알림, 위치 등)을 UI Automation으로 찾아 `browser_permission`으로 답해요. 에이전트 조작으로 뜨는 파일 선택 창은 OS 창을 띄우지 않고 가로채요. 페이지가 인쇄 창을 띄우면 바로 알려요 (페이지는 건드리지 않아요).
 
 ## 빠른 시작
 
@@ -299,7 +299,7 @@ Windows `%LOCALAPPDATA%\cdpm\`, macOS `~/Library/Application Support/cdpm/`, Lin
 
 ## CDPM이 하지 않는 것 / 막는 것
 
-- User-Agent·지문 변경, 기기 에뮬레이션, Chrome 패치를 하지 않아요. 페이지 스크립트도 바꾸지 않아요. 예외는 아래 인쇄 하나뿐이에요.
+- User-Agent·지문 변경, 기기 에뮬레이션, Chrome 패치를 하지 않아요. 페이지 스크립트도 바꾸지 않아요.
 - 실행 인자는 `--remote-debugging-port`, `--user-data-dir`, `--no-first-run`, `--no-default-browser-check`, `--window-name=N번`뿐이에요 (헤드리스 요청 시 `--headless`, 사용자가 프록시를 부탁했을 때만 `--proxy-server`와 `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` 추가). 헤드리스 Chrome은 User-Agent에 `HeadlessChrome`이 그대로 찍혀요.
 - 창 크기·위치·상태, 뷰포트, 확대 비율을 바꾸지 않아요. 페이지가 클릭 때문에 전체 화면이 되면 바로 해제해요.
 - `Runtime.enable`을 쓰지 않고, 판단용 스크립트는 전부 isolated world에서 실행해요.
@@ -309,7 +309,7 @@ Windows `%LOCALAPPDATA%\cdpm\`, macOS `~/Library/Application Support/cdpm/`, Lin
 - 거부하는 동작: `mailto:`·`tel:`·앱 전용 주소로 클릭·이동·켜면서 열기·새 탭 열기(다른 프로그램 실행), `<select>` 클릭(목록 창), `Ctrl+C/X/V`·`Shift+Insert`(사용자 클립보드)
 - 사람이 직접 누른 건 평소처럼 떠요. **에이전트가 조작하는 그 순간에만** OS 창이 뜨지 않게 해요:
   - 파일 선택 창: 클릭뿐 아니라 키(파일 칸에서 Enter 등)나 폼 제출 등 어떤 조작으로 열려도 가로채고, `browser_upload`로 넣으라고 알려요.
-  - 인쇄: 페이지가 `window.print()`를 부르면 인쇄 미리보기가 떠서 탭이 멈춰요 (CDP로 닫을 수 없음). 그래서 에이전트 조작 동안에만 페이지의 `print`를 잠깐 막고 "막았다"고 알려요. 조작이 끝나면 바로 원래대로 돌려놔요. PDF가 필요하면 `browser_pdf`.
+  - 인쇄: 페이지가 `window.print()`를 부르면 인쇄 미리보기가 뜨고, 닫힐 때까지 그 탭은 입력에 답하지 않아요. CDPM은 페이지의 `print`를 바꾸지 않고(페이지가 알아챌 수 있어서) 미리보기를 닫지도 않아요. 조작 도중 뜨면 기다리지 않고 바로 알리고, 떠 있는 동안 머리말에 어느 탭인지 보여 줘서 에이전트가 사용자에게 말해요. `browser_wait`도 뜨는 순간 멈춰요. PDF가 필요하면 `browser_pdf`.
   - 날짜·시간·색 칸은 누르면 선택 창이 떠서 클릭하지 않고, `browser_type`으로 값을 넣어요 (색은 `#ff0000` 형식).
   - `Ctrl+S`·`Ctrl+O`·`Ctrl+P` 같은 Chrome 단축키는 CDP로 보낸 키로는 동작하지 않아서 저장·열기·인쇄 창이 뜨지 않아요.
 - 알려진 한계: 버튼 안의 JS가 `mailto:` 같은 외부 프로그램 주소로 이동하는 건 미리 막지 못해요 (링크 주소는 막음). 아이디·비밀번호를 묻는 HTTP 인증 창은 에이전트가 채울 수 없어요.

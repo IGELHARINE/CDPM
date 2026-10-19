@@ -49,6 +49,27 @@ async function portOpen(port: number): Promise<boolean> {
   }
 }
 
+/** 테스트 정리용: 사람이 인쇄 미리보기의 "취소"를 누른 것처럼 닫는다 (CDPM은 닫지 않음). */
+async function cancelPrintPreview(): Promise<boolean> {
+  const all = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()) as { type: string; url: string; webSocketDebuggerUrl: string }[];
+  const pp = all.find((x) => x.type === 'page' && x.url.startsWith('chrome://print'));
+  if (!pp) return false;
+  const ws = new WebSocket(pp.webSocketDebuggerUrl);
+  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
+  const expression = "(() => { const s = document.querySelector('print-preview-app')?.shadowRoot?.querySelector('print-preview-sidebar')?.shadowRoot?.querySelector('print-preview-button-strip')?.shadowRoot?.querySelector('.cancel-button'); if (!s) return false; s.click(); return true; })()";
+  // 취소가 눌리면 미리보기가 바로 닫혀 답이 안 올 수 있다 → 답·연결 끊김·3초 중 먼저 오는 것, 그 뒤 실제로 닫혔는지로 판단
+  const settled = new Promise((r) => { ws.addEventListener('message', r, { once: true }); ws.addEventListener('close', r, { once: true }); setTimeout(r, 3000); });
+  ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression, returnByValue: true } }));
+  await settled;
+  ws.close();
+  for (let i = 0; i < 20; i++) {
+    const left = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()) as { url: string }[];
+    if (!left.some((x) => x.url.startsWith('chrome://print'))) return true;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return false;
+}
+
 /** 테스트 정리용: CDPM은 dialog를 처리하지 않으므로 테스트가 직접 닫는다. */
 async function dismissDialogs() {
   const pages = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()) as { type: string; webSocketDebuggerUrl: string }[];
@@ -386,18 +407,25 @@ describe('CDPM MCP 통합', { timeout: 180_000 }, () => {
     fs.rmSync(tmp, { force: true });
   });
 
-  it('에이전트 조작 중 인쇄 창은 막고 바로 이어감, 조작이 끝나면 원래대로 / 날짜·색 칸은 클릭 대신 값으로', async () => {
+  it('인쇄 미리보기: 페이지의 print는 건드리지 않고, 뜨면 바로 알림 (닫는 건 사람) / 날짜·색 칸은 클릭 대신 값으로', async () => {
     const A = { slot: SLOT, agent: 'A', tab: 't1' };
     await call(a, 'browser_navigate', { ...A, url: `${site.url}/printpage` });
     const snap = (await call(a, 'browser_snapshot', A)).text;
     const t0 = Date.now();
-    const p = await call(a, 'browser_click', { ...A, ref: ref(snap, /button "인쇄하기" \[(e\d+)\]/), read: 'text' });
-    assert.ok(Date.now() - t0 < 5000, `인쇄 버튼 클릭이 ${Date.now() - t0}ms 걸림 (탭이 멈춤)`);
-    assert.match(p.text, /Blocked the page from opening a print dialog/, p.text);
-    assert.match(p.text, /인쇄 뒤 이어짐/, '페이지가 멈추지 않고 이어서 실행됨');
-    // 조작이 끝나면 페이지의 print는 원래대로 (사람이 누르는 인쇄는 평소처럼)
-    const restored = await call(a, 'browser_eval', { ...A, expression: "'__cdpmPrintGuard' in window" });
-    assert.match(restored.text, /false/);
+    const p = await call(a, 'browser_click', { ...A, ref: ref(snap, /button "인쇄하기" \[(e\d+)\]/) });
+    assert.ok(Date.now() - t0 < 5000, `인쇄 버튼 클릭이 ${Date.now() - t0}ms 걸림 (미리보기를 늦게 알아챔)`);
+    assert.equal(p.isError, false, p.text);
+    assert.match(p.text, /Action done\. Then: The page opened Chrome's print dialog\. .*CDPM does not close it/, p.text);
+    // 미리보기는 탭 목록에 끼지 않고, 머리말이 어느 탭인지 알려 줌
+    const tabsNow = await call(a, 'browser_tabs', { slot: SLOT, agent: 'A' });
+    assert.doesNotMatch(tabsNow.text, /chrome:\/\/print/, tabsNow.text);
+    assert.match(tabsNow.text, /Print dialog open on tab 1 \[t1\]/, tabsNow.text);
+    // 사람이 닫으면 페이지가 이어서 실행되고 경고도 사라짐
+    assert.equal(await cancelPrintPreview(), true, '테스트가 미리보기의 취소 버튼을 찾지 못함 (Chrome 화면 구조가 바뀌었을 수 있음)');
+    await call(a, 'browser_wait', { ...A, text: '인쇄 뒤 이어짐', timeout: 10 });
+    const after = await call(a, 'browser_eval', { ...A, expression: "[Function.prototype.toString.call(window.print).includes('[native code]'), '__cdpmPrintGuard' in window]" });
+    assert.match(after.text, /\[\s*true,\s*false\s*\]/, `페이지의 print가 바뀌어 있음: ${after.text}`);
+    assert.doesNotMatch(after.text, /Print dialog open/, after.text);
     // 색 칸: 클릭은 거절, 값으로는 들어감 (대소문자 상관없이)
     const col = ref(snap, /"색"[^\n]*\[(e\d+)\]/);
     const c = await call(a, 'browser_click', { ...A, ref: col });

@@ -47,8 +47,21 @@ export async function listPages(slot: number, timeoutMs = 10_000): Promise<PageT
   const res = await fetch(`http://127.0.0.1:${portOf(slot)}/json/list`, { signal: AbortSignal.timeout(timeoutMs) });
   const all = (await res.json()) as PageTarget[];
   return all
-    .filter((t) => t.type === 'page' && !t.url.startsWith('devtools://'))
+    .filter((t) => t.type === 'page' && !t.url.startsWith('devtools://') && !isPrintPreview(t))
     .map((t) => ({ ...t, title: decodeEntities(t.title) }));
+}
+
+/**
+ * 인쇄 미리보기는 탭이 아닌데 page 대상(chrome://print/)으로 잡힌다. 어느 탭 것인지 알려 주지 않지만
+ * 제목이 그 탭 제목과 같다. 떠 있는 동안 그 탭은 입력 명령에 답하지 않는다 (페이지 스크립트가 print()에서 멈춤).
+ */
+function isPrintPreview(t: PageTarget): boolean {
+  return t.type === 'page' && t.url.startsWith('chrome://print');
+}
+
+export async function listPrintPreviews(slot: number, timeoutMs = 3000): Promise<PageTarget[]> {
+  const res = await fetch(`http://127.0.0.1:${portOf(slot)}/json/list`, { signal: AbortSignal.timeout(timeoutMs) });
+  return ((await res.json()) as PageTarget[]).filter(isPrintPreview).map((t) => ({ ...t, title: decodeEntities(t.title) }));
 }
 
 /** 다른 사이트 iframe(별도 프로세스) 대상들. 대상 ID는 그 iframe의 프레임 ID와 같다. */

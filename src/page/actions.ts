@@ -8,6 +8,7 @@ import path from 'node:path';
 import { CdpTimeoutError } from '../cdp/client.js';
 import { downloadStartedSince } from '../cdp/downloads.js';
 import { wildcard, type NetEntry } from '../cdp/network.js';
+import { listPrintPreviews } from '../cdp/targets.js';
 import { pageSession, type PageSession, type RefTarget } from '../cdp/sessions.js';
 import { CdpmError } from '../errors.js';
 import { isPaused } from '../pause.js';
@@ -37,50 +38,64 @@ export class DialogInterrupt extends CdpmError {}
 /** 입력한 뒤 실제 값이 넣으려던 글자와 다를 때 결과에 붙는 표시 (이때는 제출하지 않는다) */
 export const VALUE_MISMATCH = '[warning] Value differs from what was typed';
 
-// ---------- 에이전트 조작 동안에만: OS 창·인쇄 창 막기 ----------
+// ---------- 에이전트 조작 동안에만: OS 창 막기 ----------
 // 사람이 직접 누른 것은 평소처럼 떠야 하므로, CDPM이 조작하는 그 순간에만 켜고 끝나면 바로 푼다.
 // - 파일 선택 창: 클릭뿐 아니라 키(파일 칸에서 Enter·Space)나 폼 제출 등 어떤 경로로 열려도 OS 창 대신 가로챈다.
-// - 인쇄: window.print()는 인쇄 미리보기를 띄우고 탭을 멈추게 한다(CDP로 닫을 수 없음). 그 순간에만 페이지의 print를 잠깐 막는다.
-const PRINT_GUARD_KEY = '__cdpmPrintGuard';
-const PRINT_GUARD_ON = `(() => { const k = '${PRINT_GUARD_KEY}'; if (window[k]) return; const orig = window.print; const g = { orig, hit: 0 };
-  Object.defineProperty(window, k, { value: g, configurable: true });
-  window.print = function () { g.hit++; }; })()`;
-const PRINT_GUARD_OFF = `(() => { const k = '${PRINT_GUARD_KEY}'; const g = window[k]; if (!g) return 0; window.print = g.orig; delete window[k]; return g.hit; })()`;
+// - 인쇄: 페이지의 window.print를 바꿔치기하지 않는다 (페이지 스크립트가 바뀐 걸 알아챌 수 있음). 인쇄 미리보기가 뜨면 알리기만 한다.
 
-/** 에이전트 조작 하나를 감싼다. 조작 중에 파일 선택 창이 열리려 했거나 인쇄를 막았으면 그 안내를 돌려준다. */
+/** 조작 도중 페이지가 인쇄 미리보기를 띄움. 조작 자체는 이루어졌고, 그 탭은 사람이 미리보기를 닫을 때까지 멈춘다. */
+export class PrintInterrupt extends CdpmError {}
+
+export const PRINT_NOTE = 'It freezes that tab until a person closes it (Print or Cancel); CDPM does not close it. Tell the user it is open (slot and tab) and wait for them; actions on that tab will not respond until then. For a PDF, use browser_pdf after it is closed.';
+
+// 조작이 이만큼 지나도 안 끝나면 인쇄 미리보기가 떴는지 살핀다 (빨리 끝나는 조작은 확인하지 않음)
+const PRINT_CHECK_AFTER_MS = 300;
+const PRINT_CHECK_EVERY_MS = 300;
+
+/** 조작이 끝나기 전에 새 인쇄 미리보기가 뜨면 기다리지 않고 PrintInterrupt로 돌아온다 (미리보기가 떠 있으면 클릭 응답이 오지 않음). */
+async function watchPrint<T>(s: PageSession, run: Promise<T>): Promise<T> {
+  // 조작과 함께 시작해 둔다: 미리보기는 클릭이 도착한 뒤에야 생기므로 그 전에 끝난다
+  const before = listPrintPreviews(s.slot).then((l) => new Set(l.map((p) => p.id)), () => new Set<string>());
+  let settled = false;
+  const end = run.then(() => { settled = true; }, () => { settled = true; });
+  await Promise.race([end, sleep(PRINT_CHECK_AFTER_MS)]);
+  const known = await before;
+  while (!settled) {
+    const fresh = (await listPrintPreviews(s.slot).catch(() => [])).find((p) => !known.has(p.id));
+    if (fresh) {
+      run.catch(() => undefined); // 미리보기가 닫히면 마저 끝나거나 시간 초과로 끝난다
+      throw new PrintInterrupt(`The page opened Chrome's print dialog. ${PRINT_NOTE}`);
+    }
+    await Promise.race([end, sleep(PRINT_CHECK_EVERY_MS)]);
+  }
+  return run;
+}
+
+/** 에이전트 조작 하나를 감싼다. 조작 중에 파일 선택 창이 열리려 했으면 그 안내를 돌려준다. */
 export async function guardAction<T>(s: PageSession, fn: () => Promise<T>): Promise<{ value: T; note: string }> {
   const started = Date.now();
   let chooser: { backendNodeId: number; mode: string } | undefined;
   const off = s.conn.on('Page.fileChooserOpened', (p) => { chooser = p; });
   // 알림창이 떠 있으면 탭이 응답하지 않으므로 건너뛴다 (그때는 조작도 거의 못 함)
   const on = !s.dialog;
-  if (on) {
-    await s.send('Page.setInterceptFileChooserDialog', { enabled: true }, 1500).catch(() => undefined);
-    // 페이지 쪽(main world)의 print만 잠깐 바꾼다. Runtime.enable은 쓰지 않는다.
-    await s.send('Runtime.evaluate', { expression: PRINT_GUARD_ON, returnByValue: true }, 1500).catch(() => undefined);
-  }
+  if (on) await s.send('Page.setInterceptFileChooserDialog', { enabled: true }, 1500).catch(() => undefined);
+  const undo = () => s.send('Page.setInterceptFileChooserDialog', { enabled: false }, 1500).catch(() => undefined);
   let value: T;
-  let printed = 0;
-  const undo = async () => {
-    await s.send('Page.setInterceptFileChooserDialog', { enabled: false }, 1500).catch(() => undefined);
-    const r = await s.send<{ result?: { value?: number } }>('Runtime.evaluate', { expression: PRINT_GUARD_OFF, returnByValue: true }, 1500).catch(() => undefined);
-    return Number(r?.result?.value) || 0;
-  };
   try {
-    value = await fn();
+    value = await watchPrint(s, fn());
   } finally {
     off();
-    if (on && !s.dialog) printed = await undo();
-    // 조작 도중 알림창이 떠서 지금은 풀 수 없으면, 알림창이 닫히는 순간 푼다 (켜 둔 채 남으면 사람이 누른 파일 칸·인쇄까지 막힘)
+    if (on && !s.dialog) await undo();
+    // 조작 도중 알림창이 떠서 지금은 풀 수 없으면, 알림창이 닫히는 순간 푼다 (켜 둔 채 남으면 사람이 누른 파일 칸까지 막힘)
     else if (on) void s.conn.waitFor('Page.javascriptDialogClosed', () => true, 6 * 3600_000).then((p) => (p ? undo() : undefined));
   }
   let note = '';
   // 클릭이 이미 안내했으면(같은 창) 다시 붙이지 않는다
   if (chooser && !(s.fileChooser && s.fileChooser.at >= started)) {
     s.fileChooser = { fs: s, backendNodeId: chooser.backendNodeId, multiple: chooser.mode === 'selectMultiple', at: Date.now() };
-    note += `\nA file chooser tried to open; it was not shown to the user. Use browser_upload(files=[path${s.fileChooser.multiple ? ', ...' : ''}]).`;
+    note += `
+A file chooser tried to open; it was not shown to the user. Use browser_upload(files=[path${s.fileChooser.multiple ? ', ...' : ''}]).`;
   }
-  if (printed) note += '\nBlocked the page from opening a print dialog (would freeze the tab). Use browser_pdf to save as PDF.';
   return { value, note };
 }
 
