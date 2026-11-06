@@ -81,6 +81,8 @@ const PAGES: Record<string, string> = {
 <button onclick="history.pushState({}, '', '/hist/b'); document.getElementById('o').textContent = 'B 화면'">B로 (pushState)</button><p id="o">A 화면</p>
 <script>addEventListener('popstate', () => (document.getElementById('o').textContent = location.pathname === '/hist' ? 'A 화면' : 'B 화면'))</script>
 </body></html>`,
+  '/hiddenframe': `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>숨은 프레임</title></head><body>
+<h1>숨은 프레임</h1><iframe src="/page2" style="display:none"></iframe></body></html>`,
   '/blank': `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>새 탭 링크</title></head><body>
 <a href="/page2" target="_blank">새 탭으로 열기</a></body></html>`,
   '/page2': `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>두번째</title></head><body>

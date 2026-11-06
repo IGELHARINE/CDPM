@@ -280,6 +280,31 @@ describe('CDPM MCP 통합', { timeout: 180_000 }, () => {
     await call(a, 'browser_navigate', { slot: SLOT, agent: 'A', url: site.url });
   });
 
+  it('글자 기다리기(text·gone)는 iframe 안(같은 사이트·다른 사이트)까지 봄, 숨은 iframe은 빼고', async () => {
+    const W = { slot: SLOT, agent: 'A' };
+    // 같은 사이트 iframe 안의 "프레임 버튼": 있으므로 사라지지 않음 (전에는 메인 문서만 봐서 바로 "사라짐")
+    await call(a, 'browser_navigate', { ...W, url: site.url });
+    assert.equal((await call(a, 'browser_wait', { ...W, text: '프레임 버튼', timeout: 5 })).isError, false);
+    const sameGone = await call(a, 'browser_wait', { ...W, gone: '프레임 버튼', timeout: 2 });
+    assert.equal(sameGone.isError, true, sameGone.text);
+    // 다른 사이트 iframe(별도 프로세스) 안의 글자도 마찬가지
+    await call(a, 'browser_navigate', { ...W, url: `${site.url}/xframe` });
+    const appeared = await call(a, 'browser_wait', { ...W, text: '교차 버튼', timeout: 10 });
+    assert.equal(appeared.isError, false, appeared.text);
+    const crossGone = await call(a, 'browser_wait', { ...W, gone: '교차 버튼', timeout: 2 });
+    assert.equal(crossGone.isError, true, crossGone.text);
+    // iframe이 없어지면 사라짐
+    await call(a, 'browser_eval', { ...W, expression: "document.getElementById('x').remove()" });
+    const gone = await call(a, 'browser_wait', { ...W, gone: '교차 버튼', timeout: 5 });
+    assert.equal(gone.isError, false, gone.text);
+    assert.match(gone.text, /Text gone/);
+    // 화면에 없는 iframe(display:none)의 글자는 없는 것으로 봄
+    await call(a, 'browser_navigate', { ...W, url: `${site.url}/hiddenframe` });
+    const hidden = await call(a, 'browser_wait', { ...W, gone: '여기는 두번째입니다', timeout: 5 });
+    assert.equal(hidden.isError, false, hidden.text);
+    await call(a, 'browser_navigate', { ...W, url: site.url });
+  });
+
   it('꺼진 슬롯에 대한 실패한 조작은 "한 에이전트 한 슬롯" 기록에 남지 않음', async () => {
     const off = await call(a, 'browser_click', { slot: 9, agent: 'R', ref: 'e1' });
     assert.equal(off.isError, true);

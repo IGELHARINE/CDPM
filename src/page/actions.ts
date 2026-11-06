@@ -918,16 +918,85 @@ export async function pdf(s: PageSession, outPath: string | undefined, title: st
 /** 기다리는 도중 바로 멈출 이유 (예: 다른 에이전트의 메시지). 있으면 그 문구를 돌려준다. */
 export type StopCheck = () => string | undefined;
 
+/** iframe 하나를 읽는 방법: 같은 프로세스면 탭 연결에 frameId를 주고, 다른 사이트 iframe이면 그 iframe의 연결로. */
+interface FrameReader {
+  session: PageSession;
+  frameId?: string;
+}
+
+interface FrameDomNode {
+  nodeName: string;
+  frameId?: string;
+  children?: FrameDomNode[];
+  shadowRoots?: FrameDomNode[];
+  contentDocument?: FrameDomNode;
+}
+
+/** 탭 안의 iframe들 (중첩·다른 사이트 iframe 포함). 스냅샷과 같은 방식으로 찾는다. */
+async function frameReaders(s: PageSession, depth = 0): Promise<FrameReader[]> {
+  if (depth > 3) return [];
+  const doc = await s.send<{ root: FrameDomNode }>('DOM.getDocument', { depth: -1, pierce: true }, 3000).catch(() => undefined);
+  if (!doc) return [];
+  const out: FrameReader[] = [];
+  const remote: string[] = [];
+  const walk = (n: FrameDomNode | undefined) => {
+    if (!n) return;
+    if ((n.nodeName === 'IFRAME' || n.nodeName === 'FRAME') && n.frameId) {
+      // 같은 프로세스 iframe은 문서가 같이 오고, 다른 사이트 iframe은 문서 없이 frameId만 온다
+      if (n.contentDocument) out.push({ session: s, frameId: n.frameId });
+      else remote.push(n.frameId);
+    }
+    n.children?.forEach(walk);
+    n.shadowRoots?.forEach(walk);
+    walk(n.contentDocument);
+  };
+  walk(doc.root);
+  for (const id of remote) {
+    const child = await pageSession(s.slot, id).catch(() => undefined);
+    if (!child) continue;
+    out.push({ session: child });
+    out.push(...(await frameReaders(child, depth + 1)));
+  }
+  return out;
+}
+
+/**
+ * 글자가 탭 화면에 있는지: 메인 문서와, 크기가 있는(보이는) iframe 안까지 (로그인·결제 폼은 iframe 안에 있는 경우가 많다).
+ * iframe 목록은 1초에 한 번만 새로 찾는다. 메인 문서를 못 읽으면 undefined.
+ */
+function textChecker(s: PageSession, text: string): () => Promise<boolean | undefined> {
+  const t = JSON.stringify(text);
+  const main = `(() => { const t = ${t}; const b = document.body; return { hit: (!!b && b.innerText.includes(t)) || document.title.includes(t), frames: !!document.querySelector('iframe, frame') }; })()`;
+  // 크기가 0인 iframe(display:none 등)은 화면에 없는 것으로 본다
+  const inFrame = `(() => { const t = ${t}; const b = document.body; return innerWidth > 0 && innerHeight > 0 && !!b && b.innerText.includes(t); })()`;
+  let frames: FrameReader[] = [];
+  let foundAt = 0;
+  return async () => {
+    const r = await s.evaluate<{ hit: boolean; frames: boolean }>(main, { timeoutMs: 3000 });
+    if (!r.value) return undefined;
+    if (r.value.hit) return true;
+    if (!r.value.frames) return false;
+    if (Date.now() - foundAt > 1000) {
+      frames = await frameReaders(s);
+      foundAt = Date.now();
+    }
+    for (const f of frames) {
+      const v = await f.session.evaluate<boolean>(inFrame, { timeoutMs: 2000, frameId: f.frameId }).catch(() => undefined);
+      if (v?.value) return true;
+    }
+    return false;
+  };
+}
+
 export async function waitForText(s: PageSession, text: string, timeoutSec: number, stop?: StopCheck): Promise<string> {
   const until = Date.now() + timeoutSec * 1000;
-  const expression = `(() => { const t = ${JSON.stringify(text)}; const b = document.body; return (!!b && b.innerText.includes(t)) || document.title.includes(t); })()`;
+  const present = textChecker(s, text);
   while (Date.now() < until) {
     await s.ensureNoDialog();
     const why = stop?.();
     if (why) return why;
     try {
-      const r = await s.evaluate<boolean>(expression, { timeoutMs: 3000 });
-      if (r.value) return `Text appeared: ${JSON.stringify(text)}`;
+      if (await present()) return `Text appeared: ${JSON.stringify(text)}`;
     } catch (e) {
       if (e instanceof CdpTimeoutError) await s.ensureNoDialog();
     }
@@ -943,13 +1012,12 @@ export async function waitForText(s: PageSession, text: string, timeoutSec: numb
 /** 글자가 페이지에서 사라질 때까지 (예: 로그인 폼의 "비밀번호"가 사라짐 = 로그인 완료). 화면은 건드리지 않고 읽기만 한다. */
 export async function waitForGone(s: PageSession, text: string, timeoutSec: number, stop?: StopCheck): Promise<string> {
   const until = Date.now() + timeoutSec * 1000;
-  const expression = `(() => { const t = ${JSON.stringify(text)}; const b = document.body; return !((!!b && b.innerText.includes(t)) || document.title.includes(t)); })()`;
+  const present = textChecker(s, text);
   while (Date.now() < until) {
     await s.ensureNoDialog();
     const why = stop?.();
     if (why) return why;
-    const r = await s.evaluate<boolean>(expression, { timeoutMs: 3000 }).catch(() => undefined);
-    if (r?.value) return `Text gone: ${JSON.stringify(text)}`;
+    if ((await present().catch(() => undefined)) === false) return `Text gone: ${JSON.stringify(text)}`;
     await sleep(100);
   }
   throw new CdpmError(`${JSON.stringify(text)} did not disappear within ${timeoutSec}s.`);
