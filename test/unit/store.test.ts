@@ -50,6 +50,40 @@ describe('기록부', () => {
     assert.ok(!fs.existsSync(paths.lock()));
   });
 
+  it('죽은 잠금을 여러 프로세스가 동시에 정리해도 두 프로세스가 함께 들어가지 않음', async () => {
+    const lockUrl = new URL('../../src/registry/lock.js', import.meta.url).href;
+    const pathsUrl = new URL('../../src/paths.js', import.meta.url).href;
+    const inside = path.join(home, 'inside');
+    // 잠금 안에서 매번 "잡은 채로 죽은" 상태(죽은 PID)를 남긴다 → 다음 차례는 매번 죽은 잠금을 정리해야 들어감
+    const script = `
+      const fs = await import('node:fs');
+      const { withLock } = await import(${JSON.stringify(lockUrl)});
+      const { paths } = await import(${JSON.stringify(pathsUrl)});
+      for (let i = 0; i < 30; i++) {
+        await withLock(async () => {
+          fs.closeSync(fs.openSync(${JSON.stringify(inside)}, 'wx')); // 다른 프로세스가 안에 있으면 EEXIST
+          await new Promise((r) => setTimeout(r, 2));
+          fs.unlinkSync(${JSON.stringify(inside)});
+          fs.writeFileSync(paths.lock(), '4194300');
+        }, 30_000);
+      }`;
+    await Promise.all(Array.from({ length: 6 }, () =>
+      run(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, CDPM_HOME: home } })));
+  });
+
+  it('기록부를 잠깐 못 읽으면 빈 기록부로 덮어쓰지 않고 실패', async () => {
+    const { paths } = await import('../../src/paths.js');
+    const { readFileIfExists } = await import('../../src/registry/lock.js');
+    const { updateRegistry, readRegistry } = await import('../../src/registry/store.js');
+    assert.equal(readFileIfExists(path.join(home, 'none.json')), undefined);
+    // 읽기 오류(파일 자리에 폴더 → EISDIR)는 "없음"이 아니다
+    fs.mkdirSync(paths.registry(), { recursive: true });
+    assert.throws(() => readFileIfExists(paths.registry()));
+    await assert.rejects(updateRegistry((r) => { r.slots['1'] = { launchedAt: '', nextTabSeq: 1, tabs: {} }; }));
+    assert.ok(fs.statSync(paths.registry()).isDirectory(), '덮어쓰지 않음');
+    assert.deepEqual(readRegistry().slots, {}, '읽기만 하는 쪽은 그대로 빈 기록부');
+  });
+
   it('잠금을 쥔 프로세스가 살아 있으면 오래돼도 뺏지 않음', async () => {
     const { paths } = await import('../../src/paths.js');
     const { withLock, LockTimeoutError } = await import('../../src/registry/lock.js');

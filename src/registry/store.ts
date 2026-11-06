@@ -1,6 +1,5 @@
-import fs from 'node:fs';
 import { paths } from '../paths.js';
-import { withLock, writeFileAtomic } from './lock.js';
+import { readFileIfExists, withLock, writeFileAtomic } from './lock.js';
 
 export interface Stamp {
   agent: string;
@@ -61,22 +60,34 @@ export interface Registry {
 
 const empty = (): Registry => ({ version: 1, slots: {} });
 
+/** 읽기만 하는 쪽: 못 읽으면 빈 저장소로 본다. */
 export function readRegistry(): Registry {
   try {
-    const r = JSON.parse(fs.readFileSync(paths.registry(), 'utf8')) as Registry;
+    return readRegistryForWrite();
+  } catch {
+    return empty();
+  }
+}
+
+/** 고쳐 쓸 쪽: 파일이 없거나 깨졌으면 빈 저장소, 잠깐 못 읽으면 던진다 (빈 저장소로 덮어쓰지 않게). */
+function readRegistryForWrite(): Registry {
+  const raw = readFileIfExists(paths.registry());
+  if (raw === undefined) return empty();
+  try {
+    const r = JSON.parse(raw) as Registry;
     if (r && r.version === 1 && r.slots) return r;
   } catch {
-    // 없거나 깨졌으면 빈 저장소
+    // 깨졌으면 빈 저장소
   }
   return empty();
 }
 
 /** 잠금을 잡고 읽고-고치고-쓴다. mutator의 반환값을 돌려준다. */
 export async function updateRegistry<T>(mutator: (r: Registry) => T): Promise<T> {
-  return withLock(() => {
-    const r = readRegistry();
+  return withLock(async () => {
+    const r = readRegistryForWrite();
     const result = mutator(r);
-    writeFileAtomic(paths.registry(), JSON.stringify(r, null, 2));
+    await writeFileAtomic(paths.registry(), JSON.stringify(r, null, 2));
     return result;
   });
 }

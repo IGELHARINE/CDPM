@@ -255,6 +255,12 @@ interface DomNode {
   frameId?: string;
 }
 
+/** CDP 속성 목록([이름, 값, 이름, 값…])에서 이름으로 값 찾기. 이름 자리(짝수)만 본다 (class="href" 같은 값에 걸리지 않게). */
+export function attrValue(attrs: string[], name: string): string | undefined {
+  for (let i = 0; i + 1 < attrs.length; i += 2) if (attrs[i] === name) return attrs[i + 1];
+  return undefined;
+}
+
 /** 한 대상(탭 또는 다른 사이트 iframe)의 링크 주소와 iframe 요소 → 프레임 ID. */
 async function domInfo(session: PageSession) {
   const doc = await session.send<{ root: DomNode }>('DOM.getDocument', { depth: -1, pierce: true }).catch(() => undefined);
@@ -265,12 +271,11 @@ async function domInfo(session: PageSession) {
     if (!n) return;
     const attrs = n.attributes ?? [];
     if (n.nodeName === 'A') {
-      const i = attrs.indexOf('href');
-      if (i >= 0 && i % 2 === 0) hrefs.set(n.backendNodeId, attrs[i + 1]);
+      const href = attrValue(attrs, 'href');
+      if (href !== undefined) hrefs.set(n.backendNodeId, href);
     }
     if ((n.nodeName === 'IFRAME' || n.nodeName === 'FRAME') && n.frameId) iframeFrame.set(n.backendNodeId, n.frameId);
-    const d = attrs.indexOf('draggable');
-    if (d >= 0 && d % 2 === 0 && attrs[d + 1] === 'true') draggable.add(n.backendNodeId);
+    if (attrValue(attrs, 'draggable') === 'true') draggable.add(n.backendNodeId);
     n.children?.forEach(walk);
     n.shadowRoots?.forEach(walk);
     walk(n.contentDocument);

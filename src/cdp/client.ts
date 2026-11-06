@@ -79,23 +79,26 @@ export class CdpConnection {
     return () => set!.delete(handler);
   }
 
-  onClosed(handler: () => void) {
+  onClosed(handler: () => void): () => void {
     this.closedHandlers.add(handler);
+    return () => this.closedHandlers.delete(handler);
   }
 
-  /** 조건에 맞는 이벤트를 기다린다. 시간 안에 안 오면 null. */
+  /** 조건에 맞는 이벤트를 기다린다. 시간 안에 안 오거나 연결이 닫히면 null. */
   waitFor(event: string, predicate: (p: any) => boolean = () => true, timeoutMs = 30_000): Promise<any | null> {
+    if (this.closed) return Promise.resolve(null);
     return new Promise((resolve) => {
-      const off = this.on(event, (p) => {
-        if (!predicate(p)) return;
+      const done = (v: any) => {
         clearTimeout(timer);
         off();
-        resolve(p);
+        offClosed();
+        resolve(v);
+      };
+      const off = this.on(event, (p) => {
+        if (predicate(p)) done(p);
       });
-      const timer = setTimeout(() => {
-        off();
-        resolve(null);
-      }, timeoutMs);
+      const offClosed = this.onClosed(() => done(null));
+      const timer = setTimeout(() => done(null), timeoutMs);
     });
   }
 

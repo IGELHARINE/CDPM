@@ -60,7 +60,7 @@ export interface KeyCombo {
 /** "Control+Shift+A" 같은 조합을 해석한다. */
 export function parseCombo(combo: string): KeyCombo | undefined {
   const parts = combo.split('+').map((p) => p.trim()).filter(Boolean);
-  if (combo.endsWith('++')) parts.push('+');
+  if (combo.endsWith('++') || combo.trim() === '+') parts.push('+');
   if (!parts.length) return undefined;
   const mainName = parts.pop()!;
   let modifiers = 0;

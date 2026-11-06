@@ -36,12 +36,15 @@ const recentSlots = new Map<string, Map<number, number>>();
 /**
  * 한 에이전트는 한 슬롯만 맡는다 (병렬 처리 강제). 같은 에이전트가 60초 안에 다른 슬롯을 쓰려 하면 거절하고
  * 서브에이전트로 나누라고 돌려보낸다. 정말 한 에이전트가 여러 슬롯을 함께 봐야 하면(비교 등) multiSlot: true.
+ * 여기서는 검사만 한다. 기록은 그 슬롯에서 실제로 조작을 시작할 때(markSlotUsed) 한다
+ * (꺼진 슬롯·잘못 친 번호·멈춘 슬롯에 대한 시도가 원래 맡은 슬롯을 60초 동안 막지 않게).
  */
 function multiSlotRefusal(agent: string, slot: number, allowed: boolean | undefined): string | undefined {
   touchAgent(agent);
   const now = Date.now();
   const m = recentSlots.get(agent) ?? new Map<number, number>();
   for (const [k, at] of m) if (now - at > 60_000) m.delete(k);
+  recentSlots.set(agent, m);
   const others = [...m.keys()].filter((k) => k !== slot).sort((x, y) => x - y);
   if (others.length && !allowed) {
     const how = isClaudeCode()
@@ -51,9 +54,13 @@ function multiSlotRefusal(agent: string, slot: number, allowed: boolean | undefi
     return `Refused: ${agent} just used slot ${others.join(', ')}, so it won't take slot ${slot}. ` + how +
       `If one agent must handle several slots together (e.g. comparing), call again with multiSlot: true.`;
   }
-  m.set(slot, now);
-  recentSlots.set(agent, m);
   return undefined;
+}
+
+function markSlotUsed(agent: string, slot: number) {
+  const m = recentSlots.get(agent) ?? new Map<number, number>();
+  m.set(slot, Date.now());
+  recentSlots.set(agent, m);
 }
 
 export const DEFAULT_AGENT = `claude-${randomBytes(2).toString('hex')}`;
@@ -199,7 +206,10 @@ async function onTab(args: TabCall, kind: TabKind, action: string | null, fn: (s
     const warnings = kind === 'action' ? ownershipWarnings(tab, agent) : [];
     const before = new Set(tabs.map((t) => t.targetId));
     const session = await pageSession(slot, tab.targetId);
-    if (kind === 'action') session.actionStartedAt.set(agent, Date.now());
+    if (kind === 'action') {
+      markSlotUsed(agent, slot);
+      session.actionStartedAt.set(agent, Date.now());
+    }
     let out: Out;
     try {
       const exec = async () => {
@@ -310,8 +320,8 @@ export function registerTools(server: McpServer) {
     const live = await liveSlots();
     const target = slot ? live.filter(([s]) => s === slot) : live;
     if (!target.length) return textResult(slot ? `Slot ${slot} Chrome is not running.` : 'No slots running. Start one with browser_launch when the user asks.');
-    const parts: string[] = [];
-    for (const [s] of target) {
+    // 슬롯끼리는 서로 상관없으므로 동시에 확인한다 (출력 순서는 슬롯 번호 순 그대로)
+    const parts = await Promise.all(target.map(async ([s]) => {
       const tabs = await syncTabs(s).catch(() => null);
       const rec = readRegistry().slots[String(s)];
       let part = formatSlotStatus(s, rec ?? { launchedAt: new Date().toISOString(), nextTabSeq: 1, tabs: {} }, tabs);
@@ -319,8 +329,8 @@ export function registerTools(server: McpServer) {
         const d = knownDialog(s, t.targetId);
         if (d) part += `\n  [warning] dialog open (${d.type}) ([${t.id}]): "${truncate(d.message, 80)}"`;
       }
-      parts.push(part);
-    }
+      return part;
+    }));
     const me = agent ?? DEFAULT_AGENT;
     return textResult(`${parts.join('\n\n')}\n\n(your name: ${me})`);
   }));
@@ -615,6 +625,7 @@ export function registerTools(server: McpServer) {
       if (refused) return textResult(refused, true);
     }
     await attachSlot(slot);
+    if (button) markSlotUsed(me, slot);
     const tabs = await syncTabs(slot);
     const head = async () => header(slot, me, await syncTabs(slot).catch(() => tabs), { skipMessages: true });
     if (process.platform !== 'win32') return textResult(`${await head()}\n---\nPermission bubbles can only be detected and answered on Windows.`, true);

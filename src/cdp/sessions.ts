@@ -1,10 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { CdpmError } from '../errors.js';
-import { pidAlive } from '../util.js';
 import { portOf } from '../slots.js';
 import { paths } from '../paths.js';
-import { withFileLock } from '../registry/lock.js';
+import { removeIfOwnerDead, withFileLock } from '../registry/lock.js';
 import { CdpConnection, CdpTimeoutError } from './client.js';
 import { NetworkRecorder } from './network.js';
 import { listFrameTargets, listPages, probe } from './targets.js';
@@ -164,12 +163,21 @@ export class PageSession {
     return w;
   }
 
-  /** 실행 공간이 사라졌다는 오류면 다시 만들어 한 번 더 시도한다. */
-  async inWorld<T>(frameId: string | undefined, fn: (contextId: number) => Promise<T>): Promise<T> {
+  /**
+   * 실행 공간이 사라졌다는 오류면 다시 만들어 한 번 더 시도한다.
+   * once: 두 번 실행되면 안 되는 코드(사용자 스크립트). 실행 공간 ID가 이미 없어 시작도 못 한 경우만 다시 하고,
+   * 실행 도중 페이지가 바뀐 경우("Execution context was destroyed")는 다시 돌리지 않는다 (POST·제출이 두 번 일어나므로).
+   */
+  async inWorld<T>(frameId: string | undefined, fn: (contextId: number) => Promise<T>, once = false): Promise<T> {
+    let started = false;
     try {
-      return await fn(await this.world(frameId));
+      const contextId = await this.world(frameId);
+      started = true;
+      return await fn(contextId);
     } catch (e) {
-      if (!/context|Cannot find|not found/i.test((e as Error).message)) throw e;
+      const msg = (e as Error).message;
+      if (once && started && !/Cannot find context with specified id/i.test(msg)) throw e;
+      if (!/context|Cannot find|not found/i.test(msg)) throw e;
       this.worlds.delete(frameId ?? this.mainFrameId ?? '');
       if (!frameId) this.mainFrameId = undefined;
       return fn(await this.world(frameId));
@@ -177,14 +185,14 @@ export class PageSession {
   }
 
   /** isolated world에서 식을 평가한다. */
-  async evaluate<T = unknown>(expression: string, opts: { timeoutMs?: number; awaitPromise?: boolean; frameId?: string } = {}): Promise<{ value?: T; type: string; description?: string; unserializableValue?: string; exception?: string }> {
+  async evaluate<T = unknown>(expression: string, opts: { timeoutMs?: number; awaitPromise?: boolean; frameId?: string; once?: boolean } = {}): Promise<{ value?: T; type: string; description?: string; unserializableValue?: string; exception?: string }> {
     return this.inWorld(opts.frameId, async (contextId) => {
       const r = await this.conn.send<{ result: { type: string; value?: T; description?: string; unserializableValue?: string }; exceptionDetails?: { text: string; exception?: { description?: string } } }>(
         'Runtime.evaluate', { expression, contextId, returnByValue: true, awaitPromise: opts.awaitPromise ?? false }, opts.timeoutMs,
       );
       if (r.exceptionDetails) return { type: 'exception', exception: r.exceptionDetails.exception?.description ?? r.exceptionDetails.text };
       return r.result;
-    });
+    }, opts.once);
   }
 
   setSnapshot(agent: string, refs: Map<string, RefTarget>, cache: SnapshotCache) {
@@ -411,15 +419,30 @@ export function hasLiveBrowserConnection(slot: number): boolean {
   return !!c && !c.closed;
 }
 
+const browserConnecting = new Map<number, Promise<CdpConnection>>();
+
+/** 슬롯 브라우저 연결. 동시에 처음 불려도 연결은 하나만 만든다 (덮어써진 연결이 새거나, 닫힐 때 새 연결 기록을 지우지 않게). */
 export async function browserConnection(slot: number): Promise<CdpConnection> {
   const cached = browserConns.get(slot);
   if (cached && !cached.closed) return cached;
-  const p = await probe(slot);
-  if (p.state !== 'chrome') throw new CdpmError(`Chrome is not running on slot ${slot} (port ${portOf(slot)}).`);
-  const conn = await CdpConnection.connect(p.version.webSocketDebuggerUrl);
-  conn.onClosed(() => browserConns.delete(slot));
-  browserConns.set(slot, conn);
-  return conn;
+  const pending = browserConnecting.get(slot);
+  if (pending) return pending;
+  const p = (async () => {
+    const probed = await probe(slot);
+    if (probed.state !== 'chrome') throw new CdpmError(`Chrome is not running on slot ${slot} (port ${portOf(slot)}).`);
+    const conn = await CdpConnection.connect(probed.version.webSocketDebuggerUrl);
+    conn.onClosed(() => {
+      if (browserConns.get(slot) === conn) browserConns.delete(slot);
+    });
+    browserConns.set(slot, conn);
+    return conn;
+  })();
+  browserConnecting.set(slot, p);
+  try {
+    return await p;
+  } finally {
+    browserConnecting.delete(slot);
+  }
 }
 
 /** 탭 연결을 얻는다. 같은 탭에 동시에 요청이 와도 연결은 하나만 만든다. */
@@ -441,7 +464,9 @@ export async function pageSession(slot: number, targetId: string, wsUrl?: string
     if (!url) throw new CdpmError('Tab not found (it may have been closed).');
     const conn = await CdpConnection.connect(url);
     const session = new PageSession(slot, targetId, conn);
-    conn.onClosed(() => pageSessions.delete(key));
+    conn.onClosed(() => {
+      if (pageSessions.get(key) === session) pageSessions.delete(key);
+    });
     pageSessions.set(key, session);
     // Page.enable: dialog·로딩 이벤트용. 이미 떠 있는 dialog도 이때 알려준다.
     // Runtime.enable(봇 탐지 흔적)과 Emulation.*(사용자 환경 변경)은 쓰지 않는다.
@@ -529,13 +554,7 @@ function cleanStaleTabLocks() {
   }
   for (const n of names) {
     if (!n.endsWith('.lock')) continue;
-    const file = path.join(dir, n);
-    try {
-      const pid = Number(fs.readFileSync(file, 'utf8'));
-      if (pid > 0 && !pidAlive(pid)) fs.unlinkSync(file);
-    } catch {
-      // 그 사이 풀렸으면 무시
-    }
+    removeIfOwnerDead(path.join(dir, n));
   }
 }
 

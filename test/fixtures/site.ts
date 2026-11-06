@@ -77,6 +77,12 @@ const PAGES: Record<string, string> = {
 <div id="dst" class="box" ondragover="event.preventDefault()" ondrop="event.preventDefault();this.textContent='받음: '+event.dataTransfer.getData('text/plain')">놓을 곳</div>
 <p><input type="range" min="0" max="100" value="0" aria-label="가격 범위" style="width:300px" oninput="document.getElementById('rv').textContent='값 '+this.value"><span id="rv">값 0</span></p>
 <a href="/file.txt">받기</a></body></html>`,
+  '/hist': `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>기록 SPA</title></head><body>
+<button onclick="history.pushState({}, '', '/hist/b'); document.getElementById('o').textContent = 'B 화면'">B로 (pushState)</button><p id="o">A 화면</p>
+<script>addEventListener('popstate', () => (document.getElementById('o').textContent = location.pathname === '/hist' ? 'A 화면' : 'B 화면'))</script>
+</body></html>`,
+  '/blank': `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>새 탭 링크</title></head><body>
+<a href="/page2" target="_blank">새 탭으로 열기</a></body></html>`,
   '/page2': `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>두번째</title></head><body>
 <h1>두번째 페이지</h1><p>여기는 두번째입니다</p></body></html>`,
   '/frame': `<!doctype html><html lang="ko"><head><meta charset="utf-8"></head><body>
@@ -110,6 +116,11 @@ export async function startSite(): Promise<{ url: string; close: () => Promise<v
       const slow = new URL(req.url ?? '/', 'http://x').searchParams.get('slow');
       const done = () => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ n: slow ? 'slow' : 'fast' }));
       if (slow) setTimeout(done, 15_000); else done();
+      return;
+    }
+    if (path === '/api/count') {
+      hits.count = (hits.count ?? 0) + 1;
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ n: hits.count }));
       return;
     }
     if (path === '/api/data') {

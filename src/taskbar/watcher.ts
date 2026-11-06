@@ -18,6 +18,11 @@ export const appIdOf = (slot: number) => `cdpm.slot.${slot}.v${ICON_VERSION}`;
 /** 창마다 이 프로세스가 지정한 아이콘 경로 */
 const appliedIcon = new Map<string, string>();
 
+/** 작업표시줄 아이콘을 붙일 수 있는지 (Windows이고 koffi가 있고 Chrome 번호를 앎). 아니면 창을 기다릴 이유가 없다. */
+export function canApplyTaskbar(pid: number | undefined): boolean {
+  return !!pid && !!win32();
+}
+
 /** 한 슬롯의 창들에 적용. 이미 같은 ID면 속성은 건너뛰고 창 아이콘만 다시 지정한다. */
 export function applyTaskbar(slot: number, pid: number | undefined): number {
   const w = win32();

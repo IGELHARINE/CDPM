@@ -54,7 +54,23 @@ export async function withFileLock<T>(lockPath: string, fn: () => T | Promise<T>
   }
 }
 
-function removeIfOwnerDead(lockPath: string) {
+/**
+ * 잡은 프로세스가 죽은 잠금을 지운다. 지우는 일은 정리용 잠금(.reap)을 잡은 한 프로세스만 한다.
+ * 그러지 않으면 "죽었다"고 읽어 둔 두 프로세스 중 늦은 쪽이, 먼저 정리하고 새로 잡은 쪽의 살아 있는 잠금을 지운다.
+ */
+export function removeIfOwnerDead(lockPath: string) {
+  const reap = `${lockPath}.reap`;
+  try {
+    fs.closeSync(fs.openSync(reap, 'wx'));
+  } catch {
+    // 다른 프로세스가 정리 중. 정리는 순식간이므로 오래 남아 있으면 정리하던 프로세스가 죽은 것
+    try {
+      if (Date.now() - fs.statSync(reap).mtimeMs > UNREADABLE_GRACE_MS) fs.unlinkSync(reap);
+    } catch {
+      // 그 사이 풀렸으면 무시
+    }
+    return;
+  }
   try {
     const owner = Number(fs.readFileSync(lockPath, 'utf8'));
     if (owner > 0) {
@@ -65,11 +81,31 @@ function removeIfOwnerDead(lockPath: string) {
     if (Date.now() - fs.statSync(lockPath).mtimeMs > UNREADABLE_GRACE_MS) fs.unlinkSync(lockPath);
   } catch {
     // 그 사이 풀렸으면 무시
+  } finally {
+    try { fs.unlinkSync(reap); } catch { /* 무시 */ }
+  }
+}
+
+const syncWait = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * 파일을 읽는다. 없으면 undefined. Windows에서 백신·인덱서가 잠깐 잡고 있으면(EBUSY 등) 몇 번 다시 읽고,
+ * 그래도 못 읽으면 던진다 (못 읽은 것을 "빈 파일"로 여기고 덮어쓰면 기록이 통째로 사라지므로).
+ */
+export function readFileIfExists(file: string): string | undefined {
+  for (let i = 0; ; i++) {
+    try {
+      return fs.readFileSync(file, 'utf8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      if (i >= 5) throw e;
+      Atomics.wait(syncWait, 0, 0, 10);
+    }
   }
 }
 
 /** 임시 파일에 쓰고 rename으로 교체. Windows에서 다른 프로세스가 읽는 중이면 잠깐 실패할 수 있어 재시도한다. */
-export function writeFileAtomic(file: string, data: string) {
+export async function writeFileAtomic(file: string, data: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
   fs.writeFileSync(tmp, data);
@@ -83,8 +119,7 @@ export function writeFileAtomic(file: string, data: string) {
         try { fs.unlinkSync(tmp); } catch { /* 무시 */ }
         throw e;
       }
-      const until = Date.now() + 10;
-      while (Date.now() < until) { /* 짧게 대기 */ }
+      await sleep(10);
     }
   }
 }

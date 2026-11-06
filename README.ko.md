@@ -317,7 +317,7 @@ Windows `%LOCALAPPDATA%\cdpm\`, macOS `~/Library/Application Support/cdpm/`, Lin
 
 ## 검증
 
-- 단위 테스트 62개, 통합 테스트 42개 (`npm test`, `npm run test:integration` — 테스트 포트 29222~로 진짜 Chrome 사용)
+- 단위 테스트 67개, 통합 테스트 46개 (`npm test`, `npm run test:integration` — 테스트 포트 29222~로 진짜 Chrome 사용)
 - 오래 켜 두기 시험 (`npm run test:long`, 약 20분): 화면을 계속 새로 그리는 SPA에서 반복마다 새 에이전트 이름으로 4,000회 → CDPM 서버 힙은 일정한 범위(26~39MB) 안에서만 오르내리고 계속 늘지 않음, 페이지는 요소 1,421개·JS 힙 0.8MB 그대로. 세션 3개가 한 슬롯을 600회씩 동시에 사용(탭 1,800개 열고 닫기, 중간에 슬롯 3번 재시작) → 세션마다 힙 약 20MB 그대로, 남은 잠금 파일·탭 없음.
 - 서브에이전트 15명이 슬롯 30개를 동시에 쓰는 실사용 테스트: 테스트 전후로 창 30개 위치·크기·상태, 탭 52개 뷰포트(`innerWidth×innerHeight`), 확대 비율이 모두 그대로임을 확인
 

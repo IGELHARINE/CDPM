@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { paths } from '../paths.js';
 import { nowIso, sleep } from '../util.js';
-import { withLock, writeFileAtomic } from './lock.js';
+import { readFileIfExists, withLock, writeFileAtomic } from './lock.js';
 
 export interface Message {
   seq: number;
@@ -16,13 +16,15 @@ const MAX_LINES = 1000;
 const KEEP_LINES = 500;
 const FIRST_VISIT_BACKLOG = 20;
 
-function readAll(slot: number): Message[] {
-  let raw: string;
+/** forWrite: 고쳐 쓸 쪽이면 잠깐 못 읽었을 때 던진다 (빈 목록으로 여기면 seq가 1부터 다시 매겨짐). */
+function readAll(slot: number, forWrite = false): Message[] {
+  let raw: string | undefined;
   try {
-    raw = fs.readFileSync(paths.messages(slot), 'utf8');
-  } catch {
-    return [];
+    raw = readFileIfExists(paths.messages(slot));
+  } catch (e) {
+    if (forWrite) throw e;
   }
+  if (raw === undefined) return [];
   const out: Message[] = [];
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
@@ -35,23 +37,31 @@ function readAll(slot: number): Message[] {
   return out;
 }
 
-function readCursors(slot: number): Record<string, number> {
+/** forWrite: 고쳐 쓸 쪽이면 잠깐 못 읽었을 때 던진다 (빈 커서로 덮어쓰면 모두가 메시지를 다시 받음). */
+function readCursors(slot: number, forWrite = false): Record<string, number> {
+  let raw: string | undefined;
   try {
-    return JSON.parse(fs.readFileSync(paths.cursors(slot), 'utf8')) as Record<string, number>;
+    raw = readFileIfExists(paths.cursors(slot));
+  } catch (e) {
+    if (forWrite) throw e;
+  }
+  if (raw === undefined) return {};
+  try {
+    return JSON.parse(raw) as Record<string, number>;
   } catch {
     return {};
   }
 }
 
 export async function sendMessage(slot: number, from: string, text: string, to: string | null): Promise<Message> {
-  return withLock(() => {
-    const all = readAll(slot);
+  return withLock(async () => {
+    const all = readAll(slot, true);
     const msg: Message = { seq: (all.at(-1)?.seq ?? 0) + 1, at: nowIso(), from, to, text };
     const file = paths.messages(slot);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     if (all.length + 1 > MAX_LINES) {
       const kept = [...all.slice(-(KEEP_LINES - 1)), msg];
-      writeFileAtomic(file, kept.map((m) => JSON.stringify(m)).join('\n') + '\n');
+      await writeFileAtomic(file, kept.map((m) => JSON.stringify(m)).join('\n') + '\n');
     } else {
       fs.appendFileSync(file, JSON.stringify(msg) + '\n');
     }
@@ -76,13 +86,13 @@ export async function takeUnread(slot: number, agent: string): Promise<Message[]
     unread = all.filter((m) => m.seq > cursor && visibleTo(agent, m));
   }
   if (cursor !== lastSeq) {
-    await withLock(() => {
-      const c = readCursors(slot);
+    await withLock(async () => {
+      const c = readCursors(slot, true);
       c[agent] = Math.max(c[agent] ?? 0, lastSeq);
       // 에이전트 이름이 계속 늘어나도 파일이 커지지 않게, 가장 오래 안 읽은 이름부터 지운다.
       const names = Object.keys(c);
       if (names.length > 200) names.sort((a, b) => c[a] - c[b]).slice(0, names.length - 200).forEach((n) => delete c[n]);
-      writeFileAtomic(paths.cursors(slot), JSON.stringify(c, null, 2));
+      await writeFileAtomic(paths.cursors(slot), JSON.stringify(c, null, 2));
     });
   }
   return unread;

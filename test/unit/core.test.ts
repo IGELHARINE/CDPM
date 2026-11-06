@@ -96,6 +96,20 @@ describe('키 조합', () => {
     assert.equal(parseCombo('없는키'), undefined);
     assert.equal(parseCombo('A+B'), undefined);
   });
+  it('+ 키 단독과 조합', () => {
+    assert.equal(parseCombo('+')!.main.key, '+');
+    assert.equal(parseCombo('+')!.modifiers, 0);
+    assert.equal(parseCombo('Control++')!.main.key, '+');
+    assert.equal(parseCombo('Control++')!.modifiers, 2);
+  });
+});
+
+describe('Chrome 실행 인자', () => {
+  it('시작 주소가 -로 시작하면 Chrome 옵션으로 읽히므로 실행 전에 거절', async () => {
+    const { launchChrome } = await import('../../src/chrome/launcher.js');
+    await assert.rejects(launchChrome(1, { url: '--renderer-cmd-prefix=calc' }), /Not a URL/);
+    await assert.rejects(launchChrome(1, { url: ' -x' }), /Not a URL/);
+  });
 });
 
 const tab = (no: number, id: string, extra: Partial<TabView> = {}): TabView => ({

@@ -143,32 +143,36 @@ server.on('connect', (req, client, head) => {
   });
 });
 
-/** 그 슬롯 포트에 떠 있는 Chrome의 고유 주소 (Chrome마다 다름). 응답이 없으면 undefined. */
-function chromeId(): Promise<string | undefined> {
+/**
+ * 그 슬롯 포트에 떠 있는 Chrome의 고유 주소 (Chrome마다 다름). gone: 포트가 닫힘(Chrome이 꺼짐).
+ * 응답이 늦은 것(바쁜 Chrome)은 gone이 아니다.
+ */
+function chromeId(): Promise<{ id?: string; gone: boolean }> {
   return new Promise((resolve) => {
     const r = http.get({ host: '127.0.0.1', port: cdpPort, path: '/json/version', timeout: 2000 }, (res) => {
       let b = '';
       res.on('data', (d) => (b += d));
-      res.on('end', () => { try { resolve(JSON.parse(b).webSocketDebuggerUrl); } catch { resolve(undefined); } });
+      res.on('end', () => { try { resolve({ id: JSON.parse(b).webSocketDebuggerUrl, gone: false }); } catch { resolve({ gone: false }); } });
     });
-    r.on('error', () => resolve(undefined));
-    r.on('timeout', () => { r.destroy(); resolve(undefined); });
+    r.on('error', (e: NodeJS.ErrnoException) => resolve({ gone: e.code === 'ECONNREFUSED' }));
+    r.on('timeout', () => { r.destroy(); resolve({ gone: false }); });
   });
 }
 
 server.listen(0, '127.0.0.1', () => {
   const addr = server.address() as net.AddressInfo;
   process.stdout.write(`LISTEN ${addr.port}\n`);
-  // Chrome이 뜨기를 1분까지 기다린다. 뜬 뒤에는 그 Chrome이 꺼지거나(두 번 연속 응답 없음)
-  // 같은 포트에 다른 Chrome이 뜨면(슬롯을 끄고 다시 켬) 끝난다.
+  // Chrome이 뜨기를 1분까지 기다린다. 뜬 뒤에는 그 Chrome이 꺼지거나(두 번 연속 포트 닫힘)
+  // 같은 포트에 다른 Chrome이 뜨면(슬롯을 끄고 다시 켬) 끝난다. 바빠서 늦게 답하는 것은 꺼진 것으로 세지 않는다.
+  // (1분 넘게 한 번도 답이 없으면 그때는 끝난 것으로 본다: 혼자 남아 계속 떠 있지 않게)
   const started = Date.now();
-  let mine: string | undefined, misses = 0;
+  let mine: string | undefined, misses = 0, lastSeen = Date.now();
   const check = async () => {
-    const id = await chromeId();
+    const { id, gone } = await chromeId();
     if (id && !mine) mine = id;
     if (id && mine && id !== mine) process.exit(0);
-    if (!id && (mine ? ++misses >= 2 : Date.now() - started > 60_000)) process.exit(0);
-    if (id) misses = 0;
+    if (!id && (mine ? (gone && ++misses >= 2) || Date.now() - lastSeen > 60_000 : Date.now() - started > 60_000)) process.exit(0);
+    if (id) { misses = 0; lastSeen = Date.now(); }
     // 내 Chrome을 알아보기 전에는 자주 본다 (금방 꺼지는 Chrome도 놓치지 않게)
     setTimeout(check, mine ? 2000 : 300);
   };

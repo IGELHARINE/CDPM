@@ -38,7 +38,9 @@ export async function ensureDownloadTracking(slot: number): Promise<void> {
       d.totalBytes = p.totalBytes;
       if (p.filePath) d.filePath = p.filePath;
     });
-    conn.onClosed(() => tracking.delete(slot));
+    conn.onClosed(() => {
+      if (tracking.get(slot) === conn) tracking.delete(slot);
+    });
     await conn.send('Browser.setDownloadBehavior', { behavior: 'default', eventsEnabled: true }, 5000);
   } catch {
     tracking.delete(slot);

@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { findLines, formatAxTree, paginate, subtree, type AXNode, type FrameTrees } from '../../src/page/snapshot.js';
+import { attrValue, findLines, formatAxTree, paginate, subtree, type AXNode, type FrameTrees } from '../../src/page/snapshot.js';
+
+describe('DOM 속성', () => {
+  it('이름 자리만 본다 (다른 속성 값이 "href"여도 진짜 href를 찾음)', () => {
+    assert.equal(attrValue(['class', 'href', 'href', '/real'], 'href'), '/real');
+    assert.equal(attrValue(['title', 'draggable', 'draggable', 'true'], 'draggable'), 'true');
+    assert.equal(attrValue(['class', 'href'], 'href'), undefined);
+    assert.equal(attrValue([], 'href'), undefined);
+  });
+});
 
 let seq = 0;
 type TreeNode = AXNode & { kids: TreeNode[] };

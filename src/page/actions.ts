@@ -105,6 +105,19 @@ export class PausedInterrupt extends CdpmError {}
 // 화면을 바꾸는 명령 (멈춘 슬롯에서는 하나도 보내지 않는다). 읽기 명령은 그대로 보낸다.
 const CHANGES_PAGE = /^(Input\.(dispatch|insertText)|Page\.(navigate|reload|navigateToHistoryEntry)$|DOM\.(setFileInputFiles|scrollIntoViewIfNeeded)$)/;
 
+/** 여러 대기 중 처음으로 값(null이 아닌)을 낸 것. 모두 null이면 null. */
+function firstNonNull<T>(waits: Promise<T | null>[]): Promise<T | null> {
+  return new Promise((resolve) => {
+    let left = waits.length;
+    for (const w of waits) {
+      void w.then((v) => {
+        if (v !== null) resolve(v);
+        else if (--left === 0) resolve(null);
+      });
+    }
+  });
+}
+
 function stopIfPaused(s: PageSession) {
   if (isPaused(s.slot)) throw new PausedInterrupt('The user paused this slot, so the action stopped midway (only input already sent was applied).');
 }
@@ -363,6 +376,8 @@ async function settleAfter(s: PageSession, action: () => Promise<void>): Promise
       if (p.navigationType !== 'sameDocument' && (!s.mainFrameId || p.frameId === s.mainFrameId)) { started = true; wake(); }
     }),
     s.conn.on('Page.frameRequestedNavigation', (p) => {
+      // 새 탭·새 창으로 열리는 링크(target=_blank 등)는 이 탭에서 이동하지 않는다 (새 탭은 탭 목록 알림으로 따로 알린다)
+      if (p.disposition === 'newTab' || p.disposition === 'newWindow') return;
       if (!s.mainFrameId || p.frameId === s.mainFrameId) { started = true; wake(); }
     }),
     s.conn.on('Page.frameNavigated', (p) => {
@@ -782,9 +797,16 @@ async function history(s: PageSession, delta: -1 | 1): Promise<string> {
     await sleep(100);
     return `Went ${word}: ${decodeUrl(entry.url)} (same-document)`;
   }
+  // SPA가 pushState로 만든 기록(/a → /b)은 주소가 달라도 같은 문서 안의 이동이라 frameNavigated가 오지 않는다 → 둘 중 먼저 오는 것
+  const main = await s.mainFrame().catch(() => undefined);
   const committed = s.conn.waitFor('Page.frameNavigated', (p) => !p.frame.parentId, 30_000);
+  const within = s.conn.waitFor('Page.navigatedWithinDocument', (p) => !main || p.frameId === main, 30_000);
   await send(s, 'Page.navigateToHistoryEntry', { entryId: entry.id });
-  const nav = await committed;
+  const nav = await firstNonNull([committed.then((p) => p && 'document'), within.then((p) => p && 'same')]);
+  if (nav === 'same') {
+    await sleep(100);
+    return `Went ${word}: ${decodeUrl(entry.url)} (same-document)`;
+  }
   const state = nav ? await waitLoad(s, false) : 'timeout';
   return `Went ${word}: ${decodeUrl(entry.url)}${state === 'complete' ? '' : `
 (${LOAD_NOTE[state]})`}`;
@@ -992,7 +1014,9 @@ export class WaitStopped extends Error {}
 
 export async function waitForUrl(s: PageSession, contains: string | undefined, timeoutSec: number, stop?: StopCheck): Promise<string> {
   const href = async () => (await s.evaluate<string>('location.href', { timeoutMs: 3000 }).catch(() => undefined))?.value;
-  const start = await href();
+  // 페이지가 바빠 시작 주소를 못 읽으면 브라우저 쪽 방문 기록으로 정한다 (기준이 없으면 처음 읽힌 주소를 "바뀜"으로 잘못 봄)
+  const start = (await href()) ?? (await s.send<{ currentIndex: number; entries: { url: string }[] }>('Page.getNavigationHistory', {}, 3000)
+    .then((h) => h.entries[h.currentIndex]?.url).catch(() => undefined));
   const until = Date.now() + timeoutSec * 1000;
   while (Date.now() < until) {
     await s.ensureNoDialog();
@@ -1047,7 +1071,12 @@ export async function upload(s: PageSession, agent: string, ref: string | undefi
 
 export async function evaluate(s: PageSession, expression: string): Promise<string> {
   await s.ensureNoDialog();
-  const r = await s.evaluate(expression, { awaitPromise: true, timeoutMs: 30_000 });
+  const r = await s.evaluate(expression, { awaitPromise: true, timeoutMs: 30_000, once: true }).catch((e: Error) => {
+    if (/Execution context was destroyed|navigated or closed/i.test(e.message)) {
+      throw new CdpmError('The page navigated while the script was running; it was not re-run (it may have partly run). Check the page with browser_text or browser_snapshot.');
+    }
+    throw e;
+  });
   if (r.exception) throw new CdpmError(`JS error: ${r.exception}`);
   if (r.type === 'undefined') return 'undefined';
   if (r.unserializableValue) return r.unserializableValue;

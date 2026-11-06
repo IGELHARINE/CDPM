@@ -56,8 +56,9 @@ async function closeSlot(slot: number) {
 async function closeSlotLocked(slot: number) {
   const { probe } = await lazy.targets();
   const { browserConnection } = await lazy.sessions();
-  const { forgetSlot } = await lazy.service();
-  if ((await probe(slot)).state !== 'chrome') {
+  const { forgetSlot, probeSure } = await lazy.service();
+  // 바빠서 늦게 답하는 Chrome을 꺼진 것으로 보고 기록을 지우지 않게 (늦으면 8초까지 다시 묻는다)
+  if ((await probeSure(slot)).state !== 'chrome') {
     await forgetSlot(slot);
     console.log(`${slot}번: 이미 꺼져 있어요.`);
     return;
@@ -123,8 +124,9 @@ async function main(argv: string[]) {
     case 'purge': {
       const [slot] = slotsFrom(rest.slice(0, 1));
       if (slot === undefined) throw new CdpmError('슬롯을 적어 주세요. 예: cdpm purge 3');
-      const { probe } = await lazy.targets();
-      if ((await probe(slot)).state === 'chrome') throw new CdpmError(`${slot}번 Chrome이 떠 있어요. 먼저 cdpm close ${slot}으로 종료하세요.`);
+      // 바빠서 늦게 답하는 Chrome도 떠 있는 것이다 (늦으면 8초까지 다시 묻고, 그래도 늦으면 지우지 않고 멈춘다)
+      const { probeSure } = await lazy.service();
+      if ((await probeSure(slot)).state === 'chrome') throw new CdpmError(`${slot}번 Chrome이 떠 있어요. 먼저 cdpm close ${slot}으로 종료하세요.`);
       fs.rmSync(paths.profile(slot), { recursive: true, force: true });
       console.log(`${slot}번 프로필을 삭제했어요: ${paths.profile(slot)}`);
       break;

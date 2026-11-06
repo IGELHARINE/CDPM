@@ -9,7 +9,7 @@ import { withSlotLock } from './registry/lock.js';
 import { newSlotRecord, readRegistry, updateRegistry, type SlotRecord, type TabRecord } from './registry/store.js';
 import { MAX_SLOT, portOf } from './slots.js';
 import { applyDock, DOCK_SUPPORTED } from './taskbar/dock.js';
-import { applyTaskbar } from './taskbar/watcher.js';
+import { applyTaskbar, canApplyTaskbar } from './taskbar/watcher.js';
 import { ago, nowIso, pidAlive, secondsSince, sleep } from './util.js';
 
 export const EXTERNAL = '(external)';
@@ -41,7 +41,7 @@ export const notRunningMessage = (slot: number) =>
 
 /** 떠 있는 슬롯에 붙는다 (기록·작업표시줄 맞춤). 꺼져 있으면 켜지 않고 오류. */
 /** 포트 확인. 늦게 답하면(바쁜 Chrome) 길게 한 번 더 묻는다. */
-async function probeSure(slot: number) {
+export async function probeSure(slot: number) {
   let p = await probe(slot);
   if (p.state === 'slow') p = await probe(slot, 8000);
   if (p.state === 'slow') {
@@ -124,8 +124,8 @@ async function launchSlotLocked(slot: number, agent: string, opts: LaunchOptions
   // 처음 열린 탭을 지금(이 프로세스 안에서) 기록해야 "연 사람"이 실행한 에이전트로 남는다.
   await syncTabs(slot).catch(() => undefined);
   // 창이 뜨는 데 시간이 걸리므로 창이 나타날 때까지 적용을 시도 (창이 나타나는 것이 신호; 이후는 watcher가 맡음).
-  // 헤드리스는 창이 없으니 기다리지 않는다.
-  for (let i = 0; !opts.headless && i < 50; i++) {
+  // 헤드리스는 창이 없고, 아이콘을 붙일 수 없는 환경(Windows 외, koffi 없음)이면 기다릴 이유가 없다.
+  for (let i = 0; !opts.headless && canApplyTaskbar(pid) && i < 50; i++) {
     if (applyTaskbar(slot, pid) > 0) break;
     await sleep(100);
   }
@@ -208,7 +208,7 @@ export async function restartIfUpdated(slot: number, browser?: string): Promise<
     const conn = await browserConnection(slot).catch(() => undefined);
     for (const u of urls.slice(1)) await conn?.send('Target.createTarget', { url: u, background: true }).catch(() => undefined);
     await syncTabs(slot).catch(() => undefined);
-    for (let i = 0; !rec?.headless && i < 50; i++) {
+    for (let i = 0; !rec?.headless && canApplyTaskbar(pid) && i < 50; i++) {
       if (applyTaskbar(slot, pid) > 0) break;
       await sleep(100);
     }

@@ -254,6 +254,42 @@ describe('CDPM MCP 통합', { timeout: 180_000 }, () => {
     assert.match((await call(a, 'browser_snapshot', { slot: SLOT, agent: 'A' })).text, /테스트 메인/);
   });
 
+  it('SPA(pushState) 기록은 뒤로 가기가 바로 끝남 (30초 기다리지 않음)', async () => {
+    await call(a, 'browser_navigate', { slot: SLOT, agent: 'A', url: `${site.url}/hist` });
+    const snap = (await call(a, 'browser_snapshot', { slot: SLOT, agent: 'A' })).text;
+    await call(a, 'browser_click', { slot: SLOT, agent: 'A', ref: ref(snap, /button "B로 \(pushState\)" \[(e\d+)\]/) });
+    const t0 = Date.now();
+    const back = await call(a, 'browser_back', { slot: SLOT, agent: 'A', read: 'text' });
+    assert.equal(back.isError, false, back.text);
+    assert.ok(Date.now() - t0 < 5000, `${Date.now() - t0}ms`);
+    assert.doesNotMatch(back.text, /still loading/);
+    assert.match(back.text, /A 화면/);
+    await call(a, 'browser_navigate', { slot: SLOT, agent: 'A', url: site.url });
+  });
+
+  it('browser_eval 도중 페이지가 바뀌어도 스크립트를 다시 실행하지 않음 (POST 한 번)', async () => {
+    hits.count = 0;
+    const r = await call(a, 'browser_eval', {
+      slot: SLOT, agent: 'A',
+      expression: "fetch('/api/count', { method: 'POST' }).then(() => { location.href = '/page2'; return new Promise((r) => setTimeout(r, 5000)); })",
+    });
+    await new Promise((res) => setTimeout(res, 1000));
+    assert.equal(hits.count, 1, r.text);
+    assert.equal(r.isError, true, r.text);
+    assert.match(r.text, /not re-run/);
+    await call(a, 'browser_navigate', { slot: SLOT, agent: 'A', url: site.url });
+  });
+
+  it('꺼진 슬롯에 대한 실패한 조작은 "한 에이전트 한 슬롯" 기록에 남지 않음', async () => {
+    const off = await call(a, 'browser_click', { slot: 9, agent: 'R', ref: 'e1' });
+    assert.equal(off.isError, true);
+    const r = await call(a, 'browser_press_key', { slot: SLOT, agent: 'R', key: 'Tab' });
+    assert.equal(r.isError, false, r.text);
+    // 실제로 조작한 슬롯은 기록되어 규칙은 그대로
+    const other = await call(a, 'browser_click', { slot: 9, agent: 'R', ref: 'e1' });
+    assert.match(other.text, /Refused: R just used slot 1/);
+  });
+
   it('키 입력, JS 실행, 스크린샷, 늦게 나타나는 글자', async () => {
     assert.equal((await call(a, 'browser_press_key', { slot: SLOT, agent: 'A', key: 'Tab' })).isError, false);
     assert.equal((await call(a, 'browser_press_key', { slot: SLOT, agent: 'A', key: '없는키' })).isError, true);
@@ -531,6 +567,22 @@ describe('CDPM MCP 통합', { timeout: 180_000 }, () => {
     const after = await call(a, 'browser_tabs', { slot: SLOT, agent: 'A' });
     const idOf = (line?: string) => line?.match(/\[(t\d+)\]/)?.[1];
     assert.equal(idOf(after.text.split('\n').find((l) => l.includes('·front'))), idOf(front), '앞 탭이 바뀌면 안 됨');
+  });
+
+  // 새 탭을 열고 닫으므로 탭 ID를 고정해 쓰는 테스트들 뒤에 둔다
+  it('target=_blank 링크는 이 탭의 로딩을 기다리지 않고 새 탭만 알림', async () => {
+    const T = { slot: SLOT, agent: 'A', tab: 't1' };
+    await call(a, 'browser_navigate', { ...T, url: `${site.url}/blank` });
+    const snap = (await call(a, 'browser_snapshot', T)).text;
+    const t0 = Date.now();
+    const r = await call(a, 'browser_click', { ...T, ref: ref(snap, /link "새 탭으로 열기" \[(e\d+)\]/) });
+    assert.equal(r.isError, false, r.text);
+    assert.ok(Date.now() - t0 < 10_000, `${Date.now() - t0}ms`);
+    assert.doesNotMatch(r.text, /still loading/);
+    const m = r.text.match(/New tab opened: tab \d+ \[(t\d+)\]/);
+    assert.ok(m, r.text);
+    await call(a, 'browser_tab_close', { slot: SLOT, agent: 'A', tab: m![1] });
+    await call(a, 'browser_navigate', { ...T, url: site.url });
   });
 
   it('번호 없이 켜면 비어 있는 가장 작은 슬롯 (1번이 떠 있으면 2번)', async () => {
