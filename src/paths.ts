@@ -28,6 +28,8 @@ export interface CdpmConfig {
   extraArgs?: string[];
   /** false면 창을 슬롯 색으로 물들이지 않는다 (기본: 물들임) */
   slotTheme?: boolean;
+  /** true면 슬롯 Chrome에서도 Google 계정 동기화를 켜 둔다 (기본: 끔) */
+  sync?: boolean;
 }
 
 export function readConfig(): CdpmConfig {
