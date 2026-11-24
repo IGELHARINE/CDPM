@@ -180,6 +180,11 @@ export async function restartIfUpdated(slot: number, browser?: string): Promise<
     const stale = p.state === 'chrome' ? staleVersion(p.version.Browser) : undefined;
     if (!stale) return false;
     const rec = readRegistry().slots[String(slot)];
+    // 사용자가 멈추고 직접 쓰는 슬롯은 다시 켜지 않는다 (입력하던 내용이 사라진다). 다시 시작한 뒤에 한다
+    if (rec?.paused) {
+      updateRestarted.delete(slot);
+      return false;
+    }
     const from = `${stale.running} → ${stale.installed}`;
     if (rec?.proxy) {
       await setNotice(slot, `Slot ${slot} Chrome was updated while running (${from}), so new tabs and cross-site navigations may hang. It uses a proxy, so CDPM did not restart it: ask the user to restart it (browser_close, then browser_launch with the same proxy).`);
@@ -235,6 +240,7 @@ export async function checkUpdatedChrome(): Promise<number[]> {
     const p = await probe(slot, 1500);
     if (p.state === 'slow') unsure = true; // 바쁜 슬롯은 다음 확인 때 다시
     if (p.state !== 'chrome' || !staleVersion(p.version.Browser)) continue;
+    if (readRegistry().slots[s]?.paused) unsure = true; // 멈춘 슬롯은 다시 시작한 뒤에 다시 본다
     if (await restartIfUpdated(slot, p.version.Browser).catch(() => false)) restarted.push(slot);
   }
   // 모든 슬롯을 확인했으면 이 실행 파일은 끝. 응답이 늦은 슬롯이 있었으면 다음 주기에 다시 비교한다
@@ -418,6 +424,8 @@ export async function checkClosedWindows(): Promise<number[]> {
   await Promise.all(Object.entries(reg.slots).map(async ([key, rec]) => {
     const slot = Number(key);
     if (!pidAlive(rec.pid) || secondsSince(rec.launchedAt) < 10) return;
+    // 헤드리스는 사용자가 닫을 창이 없다: 탭이 0개인 것은 에이전트가 마지막 탭을 닫은 것이므로 슬롯을 끝내지 않는다
+    if (rec.headless) return;
     let pages: PageTarget[];
     try {
       pages = await listPages(slot, 2000);

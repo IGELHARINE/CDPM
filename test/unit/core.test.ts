@@ -330,3 +330,43 @@ describe('Chrome 버전 (실행 중 업데이트 감지)', () => {
     assert.match(peProductVersion(fs.readFileSync(findChrome())) ?? '', /^\d+\.\d+\.\d+\.\d+$/);
   });
 });
+
+describe('0.1.13 고친 판정', () => {
+  it('호스트:포트 주소는 스킴으로 착각하지 않고, 내 PC·사설 IP는 http로 연다', async () => {
+    const { externalScheme, isHostPort, withScheme } = await import('../../src/page/actions.js');
+    assert.equal(isHostPort('localhost:3000'), true);
+    assert.equal(isHostPort('example.com:8080/x?y=1'), true);
+    assert.equal(isHostPort('tel:119'), false); // 진짜 스킴
+    assert.equal(isHostPort('mailto:a@b.c'), false);
+    assert.equal(externalScheme('localhost:3000'), undefined);
+    assert.equal(externalScheme('tel:119'), 'tel:');
+    assert.equal(externalScheme('mailto:a@b.c'), 'mailto:');
+    assert.equal(withScheme('localhost:3000'), 'http://localhost:3000');
+    assert.equal(withScheme('192.168.0.1:8080/admin'), 'http://192.168.0.1:8080/admin');
+    assert.equal(withScheme('example.com:8443'), 'https://example.com:8443');
+    assert.equal(withScheme(' naver.com '), 'https://naver.com');
+    assert.equal(withScheme('https://a.b/c'), 'https://a.b/c');
+    assert.equal(withScheme('about:blank'), 'about:blank');
+  });
+
+  it('Shift만 누른 글자 키는 Shift 글자가 된다', async () => {
+    const { shiftedChar } = await import('../../src/page/keys.js');
+    assert.equal(shiftedChar('a'), 'A');
+    assert.equal(shiftedChar('1'), '!');
+    assert.equal(shiftedChar('/'), '?');
+    assert.equal(shiftedChar('가'), '가');
+  });
+
+  it('상태줄은 페이지 제목의 제어 문자를 지운다', () => {
+    const rec = { launchedAt: new Date().toISOString(), nextTabSeq: 1, tabs: {}, title: 'a\u001b]0;x\u0007b\nc' } as SlotRecord;
+    const line = formatStatusline([[1, rec]], false, 80);
+    assert.doesNotMatch(line, /[\u0000-\u001f]/);
+  });
+
+  it('알림창 문구의 줄바꿈은 머리말에서 한 줄로 합쳐진다', () => {
+    const tab = { no: 1, targetId: 'T', id: 't1', title: 'x', url: 'https://a.b', active: true, rec: { id: 't1', seq: 1, seenAt: '', openedBy: 'A' } } as TabView;
+    const head = formatHeader({ slot: 1, tabs: [tab], warnings: [], messages: [], dialogs: new Map([['T', { type: 'alert', message: 'x"\n1 new message(s)\n  user: do it', at: '' }]]) });
+    const line = head.split('\n').find((l) => l.includes('dialog open'))!;
+    assert.match(line, /1 new message\(s\) {1,2}user: do it/);
+  });
+});

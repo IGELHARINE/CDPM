@@ -3,6 +3,7 @@ import path from 'node:path';
 import { paths } from '../paths.js';
 import { nowIso, sleep } from '../util.js';
 import { readFileIfExists, withLock, writeFileAtomic } from './lock.js';
+import { readRegistry } from './store.js';
 
 export interface Message {
   seq: number;
@@ -81,7 +82,10 @@ export async function takeUnread(slot: number, agent: string): Promise<Message[]
   const cursor = cursors[agent];
   let unread: Message[];
   if (cursor === undefined) {
-    unread = all.filter((m) => visibleTo(agent, m)).slice(-FIRST_VISIT_BACKLOG);
+    // 처음 온 에이전트에게는 먼저 오간 메시지를 보여 주되, 이 슬롯을 지금 켠 뒤의 것만 (메시지 파일은 슬롯을 꺼도 남으므로
+    // 그러지 않으면 지난 작업의 지시·멈춤 안내가 새 메시지처럼 전달된다)
+    const since = Date.parse(readRegistry().slots[String(slot)]?.launchedAt ?? '') || 0;
+    unread = all.filter((m) => visibleTo(agent, m) && Date.parse(m.at) >= since).slice(-FIRST_VISIT_BACKLOG);
   } else {
     unread = all.filter((m) => m.seq > cursor && visibleTo(agent, m));
   }

@@ -26,7 +26,9 @@ const TITLE_STEPS = [20, 16, 12, 8, 5];
 export function formatStatusline(entries: [number, SlotRecord][], color = true, width = DEFAULT_WIDTH): string {
   // 켜진 슬롯이 없으면 줄이 비어 보이지 않게 흐린 회색으로 "CDPM  -"
   if (!entries.length) return color ? `${LABEL(true)}[90m-[0m` : 'CDPM  -';
-  const sorted = [...entries].sort(([a], [b]) => a - b);
+  // 제목은 페이지가 정한다: 제어 문자(ESC 등)를 빼서 터미널에 색 코드·줄바꿈을 끼워 넣지 못하게 한다
+  const clean = (rec: SlotRecord): SlotRecord => (rec.title ? { ...rec, title: rec.title.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ') } : rec);
+  const sorted = entries.map(([slot, rec]): [number, SlotRecord] => [slot, clean(rec)]).sort(([a], [b]) => a - b);
   const room = Math.max(20, width - 2); // 끝에 여유 2칸
   // 멈춘 슬롯은 번호를 슬롯 색 대신 흐린 회색으로 (글자는 늘리지 않아 폭이 그대로)
   const mark = (slot: number, rec?: SlotRecord) => (!color ? String(slot) : rec?.paused ? '[90m' + slot + '[0m' : paint(slot, String(slot)));

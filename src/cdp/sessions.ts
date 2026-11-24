@@ -5,6 +5,7 @@ import { portOf } from '../slots.js';
 import { paths } from '../paths.js';
 import { removeIfOwnerDead, withFileLock } from '../registry/lock.js';
 import { CdpConnection, CdpTimeoutError } from './client.js';
+import { noteDownloadBegin, noteDownloadProgress } from './downloads.js';
 import { NetworkRecorder } from './network.js';
 import { listFrameTargets, listPages, probe } from './targets.js';
 
@@ -94,7 +95,9 @@ export class PageSession {
     conn.on('Page.frameDetached', (p) => this.worlds.delete(p.frameId));
     conn.on('Page.downloadWillBegin', (p) => {
       this.lastDownload = { url: p.url, file: p.suggestedFilename, at: Date.now() };
+      noteDownloadBegin(slot, p);
     });
+    conn.on('Page.downloadProgress', (p) => noteDownloadProgress(slot, p));
   }
 
   /**

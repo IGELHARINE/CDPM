@@ -13,13 +13,33 @@ import { pageSession, type PageSession, type RefTarget } from '../cdp/sessions.j
 import { CdpmError } from '../errors.js';
 import { isPaused } from '../pause.js';
 import { decodeUrl, sleep } from '../util.js';
-import { charKey, KNOWN_KEYS, macCommands, parseCombo, type KeyCombo } from './keys.js';
+import { charKey, KNOWN_KEYS, macCommands, parseCombo, shiftedChar, type KeyCombo } from './keys.js';
 import { paginate } from './snapshot.js';
 
 /** 브라우저 안에서 열리는 주소 종류. 그 밖(mailto:, tel:, 앱 전용 주소 등)은 OS의 다른 프로그램을 띄우므로 막는다. */
 const SAFE_SCHEMES = ['http:', 'https:', 'about:', 'data:', 'blob:', 'file:', 'javascript:'];
 
+/**
+ * "localhost:3000", "example.com:8080/x"처럼 스킴 없이 '호스트:포트'로 시작하는 주소인지.
+ * 앞머리가 스킴(글자들 + ':')과 같은 모양이라 따로 가려낸다. "tel:119" 같은 진짜 스킴과 헷갈리지 않게
+ * 호스트는 localhost이거나 점이 들어 있어야 한다.
+ */
+export function isHostPort(url: string): boolean {
+  const m = /^([a-z0-9.-]+):\d{1,5}(?:[/?#]|$)/i.exec(url.trim());
+  return !!m && (m[1].toLowerCase() === 'localhost' || m[1].includes('.'));
+}
+
+/** 스킴이 없는 주소에 스킴을 붙인다. 내 PC·사설 IP는 http, 나머지는 https. */
+export function withScheme(rawUrl: string): string {
+  const url = rawUrl.trim();
+  if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !isHostPort(url)) return url;
+  const host = url.replace(/[/?#].*$/, '').replace(/:\d+$/, '').toLowerCase();
+  const local = host === 'localhost' || /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+  return `${local ? 'http' : 'https'}://${url}`;
+}
+
 export function externalScheme(url: string): string | undefined {
+  if (isHostPort(url)) return undefined;
   const m = /^([a-z][a-z0-9+.-]*):/i.exec(url.trim());
   if (!m) return undefined;
   const scheme = m[1].toLowerCase() + ':';
@@ -339,7 +359,7 @@ async function coveringElement(s: PageSession, t: RefTarget, targetObj: string, 
       const a = link.getBoundingClientRect(), b = this.getBoundingClientRect();
       const covers = a.left <= b.left + 1 && a.top <= b.top + 1 && a.right >= b.right - 1 && a.bottom >= b.bottom - 1;
       if (common && common.contains(link) && common !== document.body && common !== document.documentElement && covers) {
-        return { overlay: desc, href: link.href || '' };
+        return { overlay: desc, href: typeof link.href === 'string' ? link.href : (link.href && link.href.baseVal) || '' };
       }
     }
     return { blocked: desc };
@@ -468,7 +488,7 @@ export async function click(s: PageSession, agent: string, ref: string, double =
     if (info.dateType) {
       throw new CdpmError(`Not clicked: [${ref}] is a ${info.dateType} input; clicking opens a picker on the user's screen. Use browser_type (format: ${DATE_FORMAT[info.dateType] ?? info.dateType}).`);
     }
-    const href = await callOn<string>(fs, obj, 'function () { const a = this.closest && this.closest("a[href]"); return a ? a.href : ""; }');
+    const href = await callOn<string>(fs, obj, 'function () { const a = this.closest && this.closest("a[href]"); const h = a ? a.href : ""; return typeof h === "string" ? h : (h && h.baseVal) || ""; }');
     const ext = href ? externalScheme(href) : undefined;
     if (ext) {
       throw new CdpmError(`Not clicked: [${ref}] is a ${ext} link (${href.slice(0, 80)}); clicking would launch another program on the user's PC (mail, phone, app, etc.).`);
@@ -506,6 +526,8 @@ A file chooser tried to open; it was held back from the user's screen. Use brows
         const btn = this.closest && this.closest('button, input[type=submit], input[type=image]');
         const form = btn && btn.form;
         if (!form || (btn.type && btn.type !== 'submit' && btn.type !== 'image')) return '';
+        // 검증을 끈 폼(novalidate)은 값이 규칙에 안 맞아도 제출된다 (화면 이동 없이 보내는 폼에서 헛경고가 나지 않게)
+        if (form.noValidate || btn.formNoValidate) return '';
         const bad = [...form.elements].find((e) => e.willValidate && !e.checkValidity());
         if (!bad) return '';
         const label = (bad.labels && bad.labels[0] && bad.labels[0].innerText.trim()) || bad.name || bad.id || bad.type;
@@ -524,11 +546,12 @@ async function pressCombo(s: PageSession, combo: KeyCombo) {
     await send(s, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', key: m.key, code: m.code, windowsVirtualKeyCode: m.keyCode, modifiers: combo.modifiers });
   }
   const { main } = combo;
-  // 조합키(Shift 제외)가 있으면 글자를 입력하지 않는다.
-  const text = combo.modifiers & ~8 ? undefined : main.text;
+  // 조합키(Shift 제외)가 있으면 글자를 입력하지 않는다. Shift만 누른 글자 키는 Shift를 누른 글자가 들어간다 (Shift+a → A, Shift+1 → !).
+  const shiftOnly = combo.modifiers === 8 && main.text?.length === 1;
+  const text = combo.modifiers & ~8 ? undefined : shiftOnly ? shiftedChar(main.text!) : main.text;
   const commands = IS_MAC ? macCommands(combo) : [];
   await send(s, 'Input.dispatchKeyEvent', {
-    type: text ? 'keyDown' : 'rawKeyDown', key: main.key, code: main.code, windowsVirtualKeyCode: main.keyCode,
+    type: text ? 'keyDown' : 'rawKeyDown', key: shiftOnly && text ? text : main.key, code: main.code, windowsVirtualKeyCode: main.keyCode,
     modifiers: combo.modifiers, ...(text ? { text, unmodifiedText: text } : {}), ...(commands.length ? { commands } : {}),
   });
   await send(s, 'Input.dispatchKeyEvent', { type: 'keyUp', key: main.key, code: main.code, windowsVirtualKeyCode: main.keyCode, modifiers: combo.modifiers });
@@ -578,7 +601,8 @@ async function setDateLike(s: PageSession, obj: string, info: ElementInfo, text:
 
 /** 글자마다 진짜 키 이벤트(keydown → keypress → input → keyup)를 보낸다. 사람이 친 것과 같은 이벤트 순서. */
 async function typeChars(s: PageSession, text: string) {
-  for (const ch of text) {
+  // Windows 줄바꿈(\r\n)은 Enter 한 번이다 (글자마다 Enter를 누르면 두 번 눌린다)
+  for (const ch of text.replace(/\r\n?/g, '\n')) {
     const { def, shift } = charKey(ch);
     const modifiers = shift ? 8 : 0;
     await send(s, 'Input.dispatchKeyEvent', {
@@ -631,7 +655,9 @@ export async function type(s: PageSession, agent: string, ref: string, text: str
     let warn = '';
     if (info.editable !== 'none' && text) {
       const now = await callOn<string>(fs, obj, `function () { return ('value' in this && typeof this.value === 'string') ? this.value : (this.innerText || ''); }`);
-      if (!now.includes(text)) warn = `\n${VALUE_MISMATCH} (now: ${JSON.stringify(now.slice(0, 100))}). The site may block or reformat input.`;
+      // 줄바꿈 표기(\r\n, 문단 사이 빈 줄)와 줄바꿈 없는 공백(nbsp)은 사이트가 바꿔도 같은 값으로 본다
+      const norm = (v: string) => v.replace(/\r\n?/g, '\n').replace(/\n{2,}/g, '\n').replace(/\u00a0/g, ' ');
+      if (!norm(now).includes(norm(text))) warn = `\n${VALUE_MISMATCH} (now: ${JSON.stringify(now.slice(0, 100))}). The site may block or reformat input.`;
     } else if (info.editable === 'none') {
       warn = `\n[warning] [${ref}] is not an input (${info.tag}); text was sent to the focused element. Check with a snapshot.`;
     }
@@ -674,7 +700,9 @@ export async function select(s: PageSession, agent: string, ref: string, option:
       if (find.error === 'disabled') throw new CdpmError(`Option "${find.label}" is disabled.`);
       throw new CdpmError(`No option matches "${option}". Available:\n${(find.options ?? []).map((o) => `  - ${o}`).join('\n')}`);
     }
-    await send(fs, 'DOM.focus', { backendNodeId: t.backendNodeId });
+    // ref가 항목(<option>)이어도 포커스는 드롭다운(<select>)에 둔다 (항목은 포커스를 받지 못한다)
+    const selectObj = await callOnObject(fs, obj, `function () { return this.tagName === 'SELECT' ? this : this.closest('select'); }`);
+    await send(fs, 'DOM.focus', selectObj ? { objectId: selectObj } : { backendNodeId: t.backendNodeId });
     const current = () => callOn<number>(fs, obj, `function () { const sel = this.tagName === 'SELECT' ? this : this.closest('select'); return sel.selectedIndex; }`);
     const arrowDown = parseCombo('ArrowDown')!;
     const arrowUp = parseCombo('ArrowUp')!;
@@ -749,7 +777,7 @@ export async function scroll(s: PageSession, agent: string, ref: string | undefi
 
 export async function navigate(s: PageSession, rawUrl: string): Promise<string> {
   await s.ensureNoDialog();
-  let url = /^[a-z][a-z0-9+.-]*:/i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
+  let url = withScheme(rawUrl);
   // charset 없는 data:text/html은 한글이 깨진다 → utf-8로 해석하게 한다
   if (/^data:text\/html,/i.test(url)) url = url.replace(/^data:text\/html,/i, 'data:text/html;charset=utf-8,');
   const ext = externalScheme(url);
@@ -883,8 +911,10 @@ export async function drag(s: PageSession, agent: string, fromRef: string, toRef
   let dragData: unknown;
   const off = s.conn.on('Input.dragIntercepted', (p) => { dragData = p.data; });
   await s.send('Input.setInterceptDrags', { enabled: true }, 3000).catch(() => undefined);
+  let held = false;
   try {
     await send(s, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: start.x, y: start.y, button: 'left', buttons: 1, clickCount: 1 });
+    held = true;
     const steps = 12;
     for (let i = 1; i <= steps && !dragData; i++) {
       await move(start.x + ((end.x - start.x) * i) / steps, start.y + ((end.y - start.y) * i) / steps, 1);
@@ -896,8 +926,11 @@ export async function drag(s: PageSession, agent: string, fromRef: string, toRef
       }
     }
     await send(s, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: end.x, y: end.y, button: 'left', buttons: 0, clickCount: 1 });
+    held = false;
   } finally {
     off();
+    // 중간에 멈췄으면(사용자가 슬롯을 멈춤·알림창) 누른 채로 두지 않는다: 제자리에서 버튼만 뗀다
+    if (held) await s.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: start.x, y: start.y, button: 'left', buttons: 0, clickCount: 1 }, 3000).catch(() => undefined);
     await s.send('Input.setInterceptDrags', { enabled: false }, 3000).catch(() => undefined);
   }
   await s.evaluate('0', { timeoutMs: 5000 }).catch(() => undefined);
@@ -908,8 +941,11 @@ export async function drag(s: PageSession, agent: string, fromRef: string, toRef
 export async function pdf(s: PageSession, outPath: string | undefined, title: string): Promise<string> {
   await s.ensureNoDialog();
   const { data } = await send<{ data: string }>(s, 'Page.printToPDF', { printBackground: true }, 60_000);
-  const safe = (title || 'page').replace(/[\/:*?"<>|]+/g, ' ').trim().slice(0, 80) || 'page';
-  const file = outPath ? path.resolve(outPath) : path.join(os.homedir(), 'Downloads', `${safe}.pdf`);
+  // 제목은 페이지가 정한다: 경로 구분자(\ 포함)와 제어 문자를 빼서 다운로드 폴더 밖으로 나가지 못하게 한다
+  const safe = (title || 'page').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/^[.\s]+/, '').trim().slice(0, 80) || 'page';
+  let file = outPath ? path.resolve(outPath) : path.join(os.homedir(), 'Downloads', `${safe}.pdf`);
+  // 제목으로 이름을 정했을 때는 같은 제목의 다른 PDF를 덮어쓰지 않는다 (경로를 직접 준 경우는 그대로 덮어씀)
+  for (let n = 2; !outPath && fs.existsSync(file) && n < 1000; n++) file = path.join(os.homedir(), 'Downloads', `${safe} (${n}).pdf`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, Buffer.from(data, 'base64'));
   return `Saved PDF: ${file} (${(fs.statSync(file).size / 1024).toFixed(1)}KB)`;
@@ -962,11 +998,11 @@ async function frameReaders(s: PageSession, depth = 0): Promise<FrameReader[]> {
 
 /**
  * 글자가 탭 화면에 있는지: 메인 문서와, 크기가 있는(보이는) iframe 안까지 (로그인·결제 폼은 iframe 안에 있는 경우가 많다).
- * iframe 목록은 1초에 한 번만 새로 찾는다. 메인 문서를 못 읽으면 undefined.
+ * iframe 목록은 1초에 한 번만 새로 찾는다. 메인 문서를 못 읽거나 아직 읽어 들이는 중(본문이 비어 있는 순간)이면 undefined.
  */
 function textChecker(s: PageSession, text: string): () => Promise<boolean | undefined> {
   const t = JSON.stringify(text);
-  const main = `(() => { const t = ${t}; const b = document.body; return { hit: (!!b && b.innerText.includes(t)) || document.title.includes(t), frames: !!document.querySelector('iframe, frame') }; })()`;
+  const main = `(() => { const t = ${t}; const b = document.body; if (!b || document.readyState === 'loading') return null; return { hit: b.innerText.includes(t) || document.title.includes(t), frames: !!document.querySelector('iframe, frame') }; })()`;
   // 크기가 0인 iframe(display:none 등)은 화면에 없는 것으로 본다
   const inFrame = `(() => { const t = ${t}; const b = document.body; return innerWidth > 0 && innerHeight > 0 && !!b && b.innerText.includes(t); })()`;
   let frames: FrameReader[] = [];
@@ -980,11 +1016,14 @@ function textChecker(s: PageSession, text: string): () => Promise<boolean | unde
       frames = await frameReaders(s);
       foundAt = Date.now();
     }
+    let unread = false;
     for (const f of frames) {
       const v = await f.session.evaluate<boolean>(inFrame, { timeoutMs: 2000, frameId: f.frameId }).catch(() => undefined);
       if (v?.value) return true;
+      if (!v || v.type === 'exception') unread = true;
     }
-    return false;
+    // 읽지 못한 iframe이 있으면 "없다"고 단정하지 않는다 (사라짐 판정이 틀리지 않게)
+    return unread ? undefined : false;
   };
 }
 
@@ -1013,12 +1052,15 @@ export async function waitForText(s: PageSession, text: string, timeoutSec: numb
 export async function waitForGone(s: PageSession, text: string, timeoutSec: number, stop?: StopCheck): Promise<string> {
   const until = Date.now() + timeoutSec * 1000;
   const present = textChecker(s, text);
+  let gone = 0;
   while (Date.now() < until) {
     await s.ensureNoDialog();
     const why = stop?.();
     if (why) return why;
-    if ((await present().catch(() => undefined)) === false) return `Text gone: ${JSON.stringify(text)}`;
-    await sleep(100);
+    // 페이지가 넘어가는 순간의 빈 화면에 속지 않게, 연달아 두 번 없을 때만 사라진 것으로 본다
+    gone = (await present().catch(() => undefined)) === false ? gone + 1 : 0;
+    if (gone >= 2) return `Text gone: ${JSON.stringify(text)}`;
+    await sleep(50); // 두 번 확인하므로 간격을 절반으로 (사라진 뒤 알아채는 시간은 예전과 같다)
   }
   throw new CdpmError(`${JSON.stringify(text)} did not disappear within ${timeoutSec}s.`);
 }
@@ -1060,10 +1102,11 @@ export async function waitForEnabled(s: PageSession, agent: string, ref: string,
 /**
  * 주소가 패턴에 맞는 네트워크 응답이 다 올 때까지 기다리고 그 요청을 돌려준다.
  * 클릭하는 동안 응답이 먼저 와 버리는 경우가 많으므로 since(이 에이전트의 마지막 조작 시작) 뒤에 시작된 요청부터 찾는다.
- * 패턴: * 나 ? 가 있으면 와일드카드(주소 전체), 없으면 주소에 그 글자가 들어 있으면 맞음.
+ * 패턴: * 가 있으면 와일드카드(주소 전체), 없으면 주소에 그 글자가 들어 있으면 맞음.
+ * ? 만 있는 패턴("/api/search?q=…")은 쿼리가 붙은 주소 조각이므로 글자 그대로 찾는다.
  */
 export async function waitForResponse(s: PageSession, pattern: string, since: number, timeoutSec: number, stop?: StopCheck): Promise<NetEntry> {
-  const re = /[*?]/.test(pattern) ? wildcard(pattern) : undefined;
+  const re = pattern.includes('*') ? wildcard(pattern) : undefined;
   const matches = (url: string) => (re ? re.test(url) || re.test(decodeUrl(url)) : url.includes(pattern) || decodeUrl(url).includes(pattern));
   const until = Date.now() + timeoutSec * 1000;
   while (Date.now() < until) {

@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { writeJson } from './statusline-setup.js';
 
 const MARK = '<!-- cdpm:agent (cdpm setup이 관리하는 파일) -->';
 
@@ -109,10 +110,7 @@ export function setupPermissions(settingsFile = path.join(claudeDir(), 'settings
   if (!missing.length) return `CDPM 도구는 이미 권한 허용 목록에 있어요 (${want.join(', ')}).`;
   if (fs.existsSync(settingsFile) && !fs.existsSync(`${settingsFile}.before-cdpm`)) fs.copyFileSync(settingsFile, `${settingsFile}.before-cdpm`);
   cfg.permissions = { ...(cfg.permissions ?? {}), allow: [...allow, ...missing] };
-  fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
-  const tmp = `${settingsFile}.cdpm-tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n');
-  fs.renameSync(tmp, settingsFile);
+  writeJson(settingsFile, cfg);
   return `CDPM 도구를 권한 허용 목록에 넣었어요 (${missing.join(', ')}). 입력·클릭이 매번 막히지 않아요. 새 세션부터 적용돼요.`;
 }
 
@@ -129,6 +127,6 @@ export function removePermissions(settingsFile = path.join(claudeDir(), 'setting
   const next = allow.filter((a) => !want.has(a));
   if (next.length === allow.length) return '권한 허용 목록에 CDPM이 없어요.';
   cfg.permissions.allow = next;
-  fs.writeFileSync(settingsFile, JSON.stringify(cfg, null, 2) + '\n');
+  writeJson(settingsFile, cfg);
   return `권한 허용 목록에서 CDPM을 뺐어요 (${[...want].join(', ')}).`;
 }

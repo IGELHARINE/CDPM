@@ -48,6 +48,14 @@ export class NetworkRecorder {
       // 리다이렉트는 같은 requestId로 다시 온다 → 새 줄로 기록
       const wall = p.wallTime ? p.wallTime * 1000 : Date.now();
       this.wallOffset ??= wall - p.timestamp * 1000;
+      // 앞 단계(리다이렉트한 요청)의 응답은 여기에 실려 온다: 그 줄에 상태 코드와 걸린 시간을 채운다
+      const prev = p.redirectResponse ? this.byId.get(p.requestId) : undefined;
+      if (prev) {
+        prev.status = p.redirectResponse.status;
+        prev.mimeType = p.redirectResponse.mimeType;
+        prev.responseHeaders = p.redirectResponse.headers;
+        prev.durationMs = this.elapsed(prev, p.timestamp);
+      }
       const e: NetEntry = {
         no: ++this.seq, requestId: p.requestId, method: p.request.method, url: p.request.url,
         type: p.type ?? 'Other', startedAt: wall,
@@ -66,7 +74,8 @@ export class NetworkRecorder {
       if (!e) return;
       e.status = p.response.status;
       e.mimeType = p.response.mimeType;
-      e.fromCache = p.response.fromDiskCache || p.response.fromServiceWorker || undefined;
+      // requestServedFromCache(메모리 캐시)가 먼저 표시해 둔 것은 지우지 않는다
+      e.fromCache = e.fromCache || p.response.fromDiskCache || p.response.fromServiceWorker || undefined;
       e.responseHeaders = p.response.headers;
     });
     conn.on('Network.requestServedFromCache', (p) => {

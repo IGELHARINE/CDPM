@@ -45,11 +45,17 @@ export async function withFileLock<T>(lockPath: string, fn: () => T | Promise<T>
   try {
     return await fn();
   } finally {
-    try {
-      // 내 잠금일 때만 지운다
-      if (fs.readFileSync(lockPath, 'utf8') === String(process.pid)) fs.unlinkSync(lockPath);
-    } catch {
-      // 이미 정리됨
+    // 내 잠금일 때만 지운다. Windows에서 백신·인덱서가 잠깐 잡고 있으면(EBUSY 등) 몇 번 다시 한다:
+    // 못 지운 채 넘어가면 살아 있는 내 PID가 적힌 잠금이 남아 아무도 풀 수 없다.
+    for (let i = 0; ; i++) {
+      try {
+        if (fs.readFileSync(lockPath, 'utf8') === String(process.pid)) fs.unlinkSync(lockPath);
+        break;
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (i >= 20 || (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES')) break; // ENOENT 등: 이미 정리됨
+        await sleep(10);
+      }
     }
   }
 }

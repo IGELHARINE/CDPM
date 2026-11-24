@@ -55,11 +55,23 @@ function backup(file: string): string | undefined {
   return to;
 }
 
-function writeJson(file: string, data: unknown) {
+/**
+ * 설정 파일을 통째로 바꿔 쓴다. 사용자가 링크로 걸어 둔 파일(dotfile 관리)이면 링크를 끊지 않고 원본을 바꾸고,
+ * 파일 권한(0600 등)은 그대로 둔다. 임시 파일 이름은 프로세스마다 달라 여러 세션이 동시에 써도 서로 덮지 않는다.
+ */
+export function writeJson(file: string, data: unknown) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.cdpm-tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
-  fs.renameSync(tmp, file);
+  let real = file;
+  let mode: number | undefined;
+  try {
+    real = fs.realpathSync(file);
+    mode = fs.statSync(real).mode & 0o777;
+  } catch {
+    // 새로 만드는 파일
+  }
+  const tmp = `${real}.cdpm-tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', mode === undefined ? {} : { mode });
+  fs.renameSync(tmp, real);
 }
 
 /** 상태줄에 CDPM 표시가 이미 들어가 있는지. */

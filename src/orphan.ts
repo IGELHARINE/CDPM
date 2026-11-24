@@ -13,7 +13,7 @@ delete process.env.CDPM_ORPHAN;
 const say = (s) => process.stdout.write(s + '\\n');
 const c = spawn(o.cmd, o.args, { detached: true, stdio: ['ignore', o.waitLine ? 'pipe' : 'ignore', 'ignore'], windowsHide: !!o.hide });
 c.on('error', (e) => { say('ERR ' + e.message); process.exit(1); });
-if (!o.waitLine) { say('PID ' + c.pid); c.unref(); process.exit(0); }
+if (!o.waitLine) { c.on('spawn', () => { say('PID ' + c.pid); c.unref(); process.exit(0); }); }
 else {
   let buf = '';
   c.stdout.on('data', (d) => {
@@ -24,7 +24,7 @@ else {
     c.stdout.destroy(); c.unref(); process.exit(0);
   });
   c.on('exit', (code) => { say('EXIT ' + code); process.exit(1); });
-  setTimeout(() => { say('TIMEOUT'); process.exit(1); }, o.timeoutMs || 5000);
+  setTimeout(() => { say('TIMEOUT'); try { c.kill(); } catch {} process.exit(1); }, o.timeoutMs || 5000);
 }
 `;
 
@@ -48,7 +48,8 @@ export function spawnOrphan(cmd: string, args: string[], opts: OrphanOptions = {
     let out = '';
     bridge.stdout!.on('data', (d) => (out += String(d)));
     bridge.on('error', (e) => reject(new CdpmError(`Failed to start: ${e.message}`)));
-    bridge.on('exit', () => {
+    // 'close': 다리가 쓴 출력을 끝까지 받은 뒤 (exit는 마지막 출력보다 먼저 올 수 있다)
+    bridge.on('close', () => {
       const pid = Number(/PID (\d+)/.exec(out)?.[1]);
       const line = /LINE (.*)/.exec(out)?.[1];
       if (pid && (!opts.waitLine || line)) return resolve({ pid, line });

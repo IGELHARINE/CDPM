@@ -5,7 +5,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { wildcard, type BlockRule, type NetEntry } from '../cdp/network.js';
 import { browserConnection, forgetSlotVisibility, knownDialog, onAgentForgotten, pageSession, touchAgent, type DialogInfo, type PageSession } from '../cdp/sessions.js';
-import { ensureDownloadTracking, waitDownload } from '../cdp/downloads.js';
+import { waitDownload } from '../cdp/downloads.js';
 import { listPrintPreviews, probe } from '../cdp/targets.js';
 import { bubbleDetail, bubbleLine, hostsOf, permissionBubbles, pressBubble } from '../chrome/bubbles.js';
 import { describeProxy, parseProxy, type ProxySpec } from '../chrome/proxy.js';
@@ -18,7 +18,7 @@ import { ancestorsOf, findLines, paginate, subtree, takeSnapshot } from '../page
 import { hasUnread, recentDelivered, sendMessage, takeUnread, waitUnread } from '../registry/messages.js';
 import { readRegistry, updateRegistry, type BlockStamp } from '../registry/store.js';
 import {
-  attachSlot, forgetSlot, freeSlots, launchSlot, liveSlots, markCreated, ownershipWarnings, pickTab, recordAction, syncTabs,
+  attachSlot, forgetSlot, freeSlots, launchSlot, liveSlots, markCreated, probeSure, ownershipWarnings, pickTab, recordAction, syncTabs,
   type TabKind, type TabView,
 } from '../service.js';
 import { MAX_SLOT, MIN_SLOT, PORT_BASE, portOf } from '../slots.js';
@@ -189,7 +189,6 @@ async function onTab(args: TabCall, kind: TabKind, action: string | null, fn: (s
   let tabs: TabView[] = [];
   try {
     await attachSlot(slot);
-    if (kind === 'action') await ensureDownloadTracking(slot); // 이 조작으로 시작될 다운로드를 끝까지 지켜보려고 (한 번만 켜짐)
     tabs = await syncTabs(slot);
     if (tabs.length === 0 && kind === 'action') {
       const browser = await browserConnection(slot);
@@ -305,7 +304,8 @@ function headersText(h?: Record<string, string>): string {
 /** 도메인만 적으면 그 주소가 들어간 모든 요청으로 넓힌다. */
 function normalizePattern(p: string): string {
   const t = p.trim();
-  if (!t.includes('*') && !t.includes('?')) return `*${t}*`;
+  // *가 없으면 주소 조각으로 본다 (?는 한 글자 와일드카드라 "t?id=1"의 글자 ?에도 맞는다). 앞뒤를 열어야 전체 주소에 걸린다.
+  if (!t.includes('*')) return `*${t}*`;
   // "*.png"처럼 끝이 고정된 패턴도 "a.png?v=1"에 걸리도록 끝에 *를 붙인다.
   return t.endsWith('*') ? t : `${t}*`;
 }
@@ -327,7 +327,7 @@ export function registerTools(server: McpServer) {
       let part = formatSlotStatus(s, rec ?? { launchedAt: new Date().toISOString(), nextTabSeq: 1, tabs: {} }, tabs);
       for (const t of tabs ?? []) {
         const d = knownDialog(s, t.targetId);
-        if (d) part += `\n  [warning] dialog open (${d.type}) ([${t.id}]): "${truncate(d.message, 80)}"`;
+        if (d) part += `\n  [warning] dialog open (${d.type}) ([${t.id}]): "${truncate(d.message.replace(/\s+/g, ' '), 80)}"`;
       }
       return part;
     }));
@@ -389,14 +389,32 @@ export function registerTools(server: McpServer) {
     // 작은 번호부터 차례로 켠다 (작업표시줄에도 그 순서로 놓인다). 한 번의 호출로 끝내서 왕복을 줄인다.
     const lines: string[] = [];
     let anyLaunched = false;
-    for (const slot of targets) {
-      const { launched } = await launchSlot(slot, me, { headless, url: startUrl.get(slot), proxy: proxyOf.get(slot) });
+    for (const asked of targets) {
+      let slot = asked;
+      let launched: boolean;
+      try {
+        ({ launched } = await launchSlot(slot, me, { headless, url: startUrl.get(asked), proxy: proxyOf.get(asked) }));
+        // 번호 없이 "하나 켜 줘"였는데 그 사이 다른 세션이 같은 빈 슬롯을 먼저 켰으면, 남의 슬롯에 붙지 않고 다음 빈 슬롯을 켠다
+        for (let tries = 0; picked && headless !== undefined && !launched && tries < 3; tries++) {
+          const next = (await freeSlots(MAX_SLOT)).find((n) => !targets.includes(n));
+          if (next === undefined) break;
+          slot = next;
+          ({ launched } = await launchSlot(slot, me, { headless, url: startUrl.get(asked), proxy: proxyOf.get(asked) }));
+        }
+      } catch (e) {
+        // 하나가 실패해도 이미 켠 슬롯은 알려야 한다 (오류만 돌려주면 켜진 슬롯이 보고에서 빠진다)
+        lines.push(`Slot ${slot} failed to start: ${errorText(e)}`);
+        continue;
+      }
+      if (slot !== asked && startUrl.has(asked)) startUrl.set(slot, startUrl.get(asked)!);
+      if (slot !== asked && proxyOf.has(asked)) proxyOf.set(slot, proxyOf.get(asked)!);
       anyLaunched ||= launched;
       if (launched) await recordAction(slot, '', me, 'launch', undefined, !agent);
       const running = readRegistry().slots[String(slot)];
       const mode = running?.headless ? 'headless' : 'windowed';
       const via = running?.proxy ? `, proxy ${running.proxy}` : '';
       let line = launched ? `Started slot ${slot} Chrome ${mode} (port ${portOf(slot)}${via})${startUrl.get(slot) ? ` → opening ${truncate(startUrl.get(slot)!, 60)}` : ''}.` : `Slot ${slot} Chrome already running; attached.`;
+      if (!launched && startUrl.get(slot)) line += ` [note] The start URL was not opened (the slot was already running); navigate or open a tab yourself.`;
       if (!launched && headless !== undefined && headless !== !!running?.headless) {
         line += ` [warning] Already running ${mode}, attached as is. To change, browser_close then launch again.`;
       }
@@ -433,7 +451,8 @@ export function registerTools(server: McpServer) {
     inputSchema: { slot: slotArg, agent: agentArg },
   }, async ({ slot, agent }) => guard(() => withSlotLock(slot, async () => {
     const me = agent ?? DEFAULT_AGENT;
-    if ((await probe(slot)).state !== 'chrome') {
+    // 바쁜 Chrome은 늦게 답한다: 길게 한 번 더 물어서, 떠 있는 Chrome을 "이미 꺼짐"으로 처리해 기록만 지우는 일이 없게 한다
+    if ((await probeSure(slot)).state !== 'chrome') {
       await forgetSlot(slot);
       return textResult(`Slot ${slot} Chrome is already closed.`);
     }
@@ -447,6 +466,10 @@ export function registerTools(server: McpServer) {
     for (let i = 0; i < 25 && (await probe(slot, 500)).state === 'chrome'; i++) await sleep(200);
     // 포트가 닫혀도 프로세스는 잠깐 더 살아 프로필을 붙잡는다. 끝날 때까지 기다려야 바로 다시 켜도 안전하다.
     for (let i = 0; rec?.pid && i < 50 && pidAlive(rec.pid); i++) await sleep(100);
+    // 끝내 닫히지 않았으면(페이지가 "나가시겠습니까?"로 붙잡는 등) 닫았다고 하지 않고 기록도 그대로 둔다
+    if ((await probe(slot, 1500)).state === 'chrome') {
+      return textResult([...warnings, `Slot ${slot} Chrome did not close within 10s (a page may be asking to confirm leaving). It is still running; check its tabs or try again.`].join('\n'), true);
+    }
     await forgetSlot(slot);
     return textResult([...warnings, `Closed slot ${slot} Chrome. The profile is kept, so logins persist next launch.`].join('\n'));
   })));
@@ -475,7 +498,7 @@ export function registerTools(server: McpServer) {
     if (paused) return textResult(paused, true);
     await attachSlot(slot);
     const browser = await browserConnection(slot);
-    const target = url ? (/^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `https://${url}`) : 'about:blank';
+    const target = url ? act.withScheme(url) : 'about:blank';
     const ext = act.externalScheme(target);
     if (ext) throw new CdpmError(`Can't open a ${ext} URL (${target.slice(0, 80)}) (it would launch another program on the user's PC).`);
     // background: 사용자가 보고 있는 탭을 바꾸지 않는다.
@@ -738,13 +761,21 @@ export function registerTools(server: McpServer) {
         done.push(`${i + 1}. ${r}`);
         if (r.includes(act.VALUE_MISMATCH)) return stop(`Stopped: field ${i + 1} [${f.ref}] value differs from the intended text (not submitted). Check the value and retry.`);
       } catch (e) {
-        if (e instanceof act.DialogInterrupt) throw e;
+        // 알림창이 떠도 어디까지 채웠는지는 알려야 한다 (그냥 던지면 "Action done"만 남고 뒤 칸·제출을 건너뛴 것이 가려진다)
+        if (e instanceof act.DialogInterrupt) return stop(`Stopped at field ${i + 1} [${f.ref}]: ${e.message} Later fields${args.submit ? ' and submit' : ''} were skipped.`);
         return stop(`Stopped at field ${i + 1} [${f.ref}]: ${(e as Error).message}`);
       }
     }
     if (args.submit) {
       if (s.dialog) return stop('Stopped before submit: a dialog appeared.');
-      done.push(`Submit: ${args.submit.toLowerCase() === 'enter' ? await act.pressKey(s, 'Enter') : await act.click(s, agent, args.submit, false)}`);
+      try {
+        done.push(`Submit: ${args.submit.toLowerCase() === 'enter' ? await act.pressKey(s, 'Enter') : await act.click(s, agent, args.submit, false)}`);
+      } catch (e) {
+        if (e instanceof act.PausedInterrupt) throw e;
+        // 제출 도중 알림창·인쇄 창이 뜬 것은 제출이 된 것. 그 밖의 실패도 채운 칸 목록은 남긴다
+        if (e instanceof act.DialogInterrupt || e instanceof act.PrintInterrupt) return stop(`Submit: done. Then: ${e.message}`);
+        return stop(`Submit failed (fields above are filled): ${(e as Error).message}`);
+      }
     }
     return { text: done.join('\n') };
   }));
@@ -797,7 +828,7 @@ export function registerTools(server: McpServer) {
       timeout: z.number().min(1).max(600).optional().describe('Max wait in seconds for text/gone/url/enabled/response/network_idle. 300-600 when waiting for a human login, etc.'),
       network_idle: z.boolean().optional().describe('Until no network requests for 0.5s (before capture/read)'),
       enabled: z.string().optional().describe('Until this ref element (button/input) becomes enabled'),
-      response: z.string().optional().describe('Until a network response whose URL contains this completes (e.g. "/api/search"). * ? wildcards work (matched against the full URL, e.g. "*api.example.com/v1/items*"). Returns the response body'),
+      response: z.string().optional().describe('Until a network response whose URL contains this completes (e.g. "/api/search"). With * it becomes a wildcard matched against the full URL (e.g. "*api.example.com/v1/items*"; ? = any one character). Returns the response body'),
     },
   }, async (args) => onTab(args, 'view', null, async (s, _tab, agent) => {
     // 기다리는 동안 새로 뜬 권한 말풍선도 바로 알린다 (이미 떠 있던 것은 머리말로 이미 알렸으니 제외)

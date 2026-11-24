@@ -276,3 +276,16 @@ describe('자동 설정 (업데이트 때 항목별 판단)', () => {
     assert.deepEqual(calls, ['statusline']);
   });
 });
+
+describe('처음 온 에이전트의 메시지', () => {
+  it('슬롯을 지금 켜기 전에 오간 메시지는 전달하지 않는다', async () => {
+    const { sendMessage, takeUnread } = await import('../../src/registry/messages.js');
+    const { updateRegistry } = await import('../../src/registry/store.js');
+    await sendMessage(9, 'old', '지난 작업의 지시', null);
+    await new Promise((r) => setTimeout(r, 15));
+    await updateRegistry((r) => { r.slots['9'] = { launchedAt: new Date().toISOString(), nextTabSeq: 1, tabs: {} }; });
+    await new Promise((r) => setTimeout(r, 15));
+    await sendMessage(9, 'peer', '로그인 끝', null);
+    assert.deepEqual((await takeUnread(9, 'newcomer')).map((m) => m.text), ['로그인 끝']);
+  });
+});

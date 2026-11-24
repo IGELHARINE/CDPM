@@ -122,3 +122,13 @@ export function charKey(ch: string): { def: KeyDef; shift: boolean } {
   if (/^[0-9]$/.test(ch)) return { def: { key: ch, code: `Digit${ch}`, keyCode: ch.charCodeAt(0), text: ch }, shift: false };
   return { def: { key: ch, code: '', keyCode: 0, text: ch }, shift: false };
 }
+
+/** Shift를 누른 채 친 글자 (미국 자판 기준). 표에 없으면 그대로. */
+const SHIFTED: Record<string, string> = {
+  '1': '!', '2': '@', '3': '#', '4': '$', '5': '%', '6': '^', '7': '&', '8': '*', '9': '(', '0': ')',
+  '-': '_', '=': '+', '[': '{', ']': '}', '\\': '|', ';': ':', "'": '"', ',': '<', '.': '>', '/': '?', '`': '~',
+};
+export function shiftedChar(ch: string): string {
+  if (/^[a-z]$/.test(ch)) return ch.toUpperCase();
+  return SHIFTED[ch] ?? ch;
+}

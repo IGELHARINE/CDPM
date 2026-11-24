@@ -678,6 +678,10 @@ describe('CDPM MCP 통합', { timeout: 180_000 }, () => {
     await call(a, 'browser_click', { ...A, ref: ref(snap, /button "검색" \[(e\d+)\]/) });
     const w = await call(a, 'browser_wait', { ...A, response: '*search?q=사과*', timeout: 10 });
     assert.match(w.text, /"q":"사과"/, w.text);
+    // ?가 든 주소 조각(쿼리)은 글자 그대로 찾는다 (전에는 ?가 와일드카드로 바뀌어 주소 전체와 맞춰져 늘 시간 초과였다)
+    await call(a, 'browser_click', { ...A, ref: ref(snap, /button "검색" \[(e\d+)\]/) });
+    const q = await call(a, 'browser_wait', { ...A, response: '/api/search?q=', timeout: 10 });
+    assert.match(q.text, /Response received: .*200/, q.text);
     // 오지 않는 응답은 시간 초과
     const none = await call(a, 'browser_wait', { ...A, response: '/api/never', timeout: 1 });
     assert.equal(none.isError, true);
@@ -789,6 +793,14 @@ describe('CDPM MCP 통합', { timeout: 180_000 }, () => {
     const r = await call(a, 'browser_wait', { ...A, response: '/api/hang', timeout: 10 });
     assert.match(r.text, /"n":"fast"/, r.text);
     assert.ok(Date.now() - t0 < 8000, '15초짜리 요청을 기다리면 안 됨');
+  });
+
+  it('스킴 없는 호스트:포트 주소(127.0.0.1:포트)로 이동 (전에는 스킴으로 착각해 거절)', async () => {
+    const bare = site.url.replace(/^http:\/\//, '');
+    const nav = await call(a, 'browser_navigate', { slot: SLOT, agent: 'A', url: `${bare}/page2` });
+    assert.equal(nav.isError, false, nav.text);
+    assert.doesNotMatch(nav.text, /launch another program/);
+    await call(a, 'browser_navigate', { slot: SLOT, agent: 'A', url: site.url });
   });
 
   it('새 탭도 외부 프로그램 주소(mailto 등)는 거절', async () => {

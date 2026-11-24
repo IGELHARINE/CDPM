@@ -26,6 +26,8 @@ export const paths = {
 export interface CdpmConfig {
   chromePath?: string;
   extraArgs?: string[];
+  /** false면 창을 슬롯 색으로 물들이지 않는다 (기본: 물들임) */
+  slotTheme?: boolean;
 }
 
 export function readConfig(): CdpmConfig {

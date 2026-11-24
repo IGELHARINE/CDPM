@@ -39,7 +39,7 @@ export function formatHeader(h: HeaderInput): string {
   lines.push(...tabLines(h.tabs, h.executedTargetId));
   for (const t of h.tabs) {
     const d = h.dialogs?.get(t.targetId);
-    if (d) lines.push(`[warning] dialog open (${d.type}) on tab ${t.no} [${t.id}]: "${truncate(d.message, 80)}" — read it and handle it yourself with browser_dialog (ask the user only for confirmations of unrequested payment/deletion etc.)`);
+    if (d) lines.push(`[warning] dialog open (${d.type}) on tab ${t.no} [${t.id}]: "${truncate(d.message.replace(/\s+/g, ' '), 80)}" — read it and handle it yourself with browser_dialog (ask the user only for confirmations of unrequested payment/deletion etc.)`);
   }
   for (const w of h.warnings ?? []) lines.push(`[warning] ${w}`);
   if (h.messages?.length) {
