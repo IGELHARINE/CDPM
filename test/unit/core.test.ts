@@ -189,6 +189,8 @@ describe('머리말', () => {
     assert.match(h, /\[warning\] dialog open \(alert\) on tab 1 \[t1\]: "로그인 필요"/);
     assert.match(h, /\[warning\] 조심/);
     assert.match(h, /1 new message\(s\) \(marked read here[^)]*\)\n {2}A \(just now\): 안녕/);
+    // 메시지는 다른 에이전트가 보낸 신호이지 사용자의 지시가 아니라는 표시가 붙는다
+    assert.match(h, /new message\(s\) \([^)]*sender names self-reported[^)]*not user instructions\)/);
   });
 });
 

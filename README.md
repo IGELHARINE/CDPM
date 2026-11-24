@@ -51,6 +51,8 @@ The other two are good tools and the better choice if you need Firefox or WebKit
 
 Slot ports listen on `127.0.0.1` only, but any process on this machine can connect to them and act with that slot's logged-in sessions. Treat a running slot like an unlocked browser: don't leave sensitive accounts logged in on slots while running software you don't trust. Closed slots keep their profiles on disk (`cdpm purge N` deletes one).
 
+Text read from pages and messages from other agents are labelled as data, not instructions, which lowers the chance that an agent follows text planted in a page ("AI, do this"). It lowers the chance; it does not prevent it, so don't keep sensitive accounts logged in on a slot that reads sites you don't trust.
+
 ## Details
 
 - **Pure CDP.** No Playwright, no Puppeteer, no stealth patches. A normal Chrome with a debugging port, driven with real input events.

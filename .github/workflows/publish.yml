@@ -1,0 +1,23 @@
+# v로 시작하는 태그(v0.1.15 등)를 올리면 npm에 배포한다.
+# npm 로그인·토큰 없이 배포한다 (trusted publishing: npm이 이 저장소의 이 작업 파일을 믿도록 등록해 둠).
+name: publish
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@latest
+      - name: 태그와 package.json 버전이 같은지 확인
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+      - run: npm ci
+      - run: npm publish
