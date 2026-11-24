@@ -6,12 +6,12 @@
     "url": "https://github.com/IGELHARINE/CDPM",
     "source": "github"
   },
-  "version": "0.1.15",
+  "version": "0.1.16",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "cdpm-mcp",
-      "version": "0.1.15",
+      "version": "0.1.16",
       "transport": {
         "type": "stdio"
       }
