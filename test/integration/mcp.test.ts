@@ -110,8 +110,10 @@ describe('CDPM MCP 통합', { timeout: 180_000 }, () => {
   });
 
   it('범위 밖 슬롯은 거부', async () => {
-    const r = await a.callTool({ name: 'browser_launch', arguments: { slot: 31 } });
-    assert.ok(r.isError);
+    for (const slot of [0, 100]) {
+      const r = await a.callTool({ name: 'browser_launch', arguments: { slot } });
+      assert.ok(r.isError, `slot ${slot}`);
+    }
   });
 
   it('꺼진 슬롯은 다른 도구가 켜지 않음', async () => {
@@ -885,6 +887,21 @@ describe('CDPM MCP 통합', { timeout: 180_000 }, () => {
     // 뒤 탭은 Chrome이 타이머를 1초에 한 번으로 늦추므로 넉넉히 기다린다
     await wait(3000);
     assert.ok((hits.tracker ?? 0) - c3 >= 2, '규칙을 풀었는데 요청이 다시 들어오지 않음');
+  });
+
+  it('30번 넘는 슬롯도 켜고, 상태에 보이고, 끌 수 있음 (99번까지)', async () => {
+    const slot = 31;
+    const up = await call(a, 'browser_launch', { slot, agent: 'A', headless: true });
+    assert.equal(up.isError, false, up.text);
+    assert.match(up.text, /Started slot 31 Chrome headless/);
+    const status = await call(a, 'browser_status', { agent: 'A' });
+    assert.match(status.text, /\[Slot 31\]/, status.text);
+    const text = await call(a, 'browser_navigate', { slot, agent: 'A31', url: site.url, read: 'text' });
+    assert.equal(text.isError, false, text.text);
+    const down = await call(a, 'browser_close', { slot, agent: 'A' });
+    assert.equal(down.isError, false, down.text);
+    const bad = await call(a, 'browser_launch', { slot: 100, agent: 'A', headless: true });
+    assert.equal(bad.isError, true);
   });
 
   it('두 세션이 같은 슬롯을 동시에 켜도 한 번만 뜨고 둘 다 성공 (슬롯 잠금)', async () => {

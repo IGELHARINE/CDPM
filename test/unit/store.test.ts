@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { runAutoSetup } from '../../src/auto-setup.js';
 import { isStatuslineConfigured, setupStatusline } from '../../src/statusline-setup.js';
-import { buildIcon, encodePng, precompensate, renderIcon, ICON_SIZES } from '../../src/taskbar/icon.js';
+import { barsFor, buildIcon, encodePng, precompensate, renderIcon, ICON_SIZES } from '../../src/taskbar/icon.js';
 
 const run = promisify(execFile);
 let home: string;
@@ -160,14 +160,39 @@ describe('아이콘', () => {
     }
     assert.ok(total / count <= 2, `평균 차이 ${total / count}`);
   });
-  it('가운데에 흰 글자, 모서리는 투명', () => {
+  it('배경 없이 슬롯 색 전자시계 숫자 + 그림자 (모서리는 투명)', () => {
     const size = 64;
-    const px = renderIcon(1, size);
+    const px = renderIcon(1, size); // 1번 = #2563EB
     const at = (x: number, y: number) => [...px.subarray((y * size + x) * 4, (y * size + x) * 4 + 4)];
-    assert.equal(at(0, 0)[3], 0);
-    let white = 0;
-    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) if (at(x, y).slice(0, 3).every((v) => v > 240)) white++;
-    assert.ok(white > 100, `흰 픽셀 ${white}`);
+    for (const [x, y] of [[0, 0], [63, 0], [0, 63], [63, 63], [4, 32]]) assert.equal(at(x, y)[3], 0, `(${x},${y})는 투명해야 함`);
+    let color = 0, shadow = 0;
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const [r, g, b, a] = at(x, y);
+      if (a === 255 && r === 0x25 && g === 0x63 && b === 0xeb) color++;
+      else if (a > 20 && a < 200 && r + g + b < 30) shadow++;
+    }
+    assert.ok(color > 100, `슬롯 색 픽셀 ${color}`);
+    assert.ok(shadow > 10, `그림자 픽셀 ${shadow}`);
+  });
+  it('숫자는 아이콘 가운데에: "1"처럼 한쪽 세그먼트만 켜지는 숫자도, 두 자리도', () => {
+    // 큰 크기는 정확히 가운데, 작은 크기는 정수 픽셀에 맞추므로 반 픽셀 안
+    for (const size of [512, 64, 32, 24, 16]) {
+      for (const n of [1, 7, 8, 12, 30, 99]) {
+        const bars = barsFor(String(n), size);
+        const lo = Math.min(...bars.map((b) => b.cx - (b.horizontal ? b.len / 2 : b.t / 2)));
+        const hi = Math.max(...bars.map((b) => b.cx + (b.horizontal ? b.len / 2 : b.t / 2)));
+        assert.ok(Math.abs((lo + hi) / 2 - size / 2) <= (size > 64 ? 0.01 : 0.5), `${size}px ${n}: 가운데 ${(lo + hi) / 2}`);
+        assert.ok(lo >= 0 && hi <= size, `${size}px ${n}: 아이콘 밖으로 나감 (${lo}~${hi})`);
+      }
+    }
+    // 작은 크기에서는 세그먼트 두께가 정수 픽셀이고 곧은 변이 픽셀 경계에 놓인다 (작업표시줄에서 번지지 않게)
+    for (const b of barsFor('88', 24)) {
+      assert.ok(Number.isInteger(b.t), `두께 ${b.t}`);
+      const edge = (b.horizontal ? b.cy : b.cx) - b.t / 2;
+      assert.ok(Math.abs(edge - Math.round(edge)) < 1e-9, `변 위치 ${edge}`);
+    }
+    assert.equal(barsFor('8', 64).length, 7);
+    assert.equal(barsFor('1', 64).length, 2);
   });
 });
 

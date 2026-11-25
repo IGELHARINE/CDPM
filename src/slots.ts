@@ -1,11 +1,17 @@
-// 슬롯 1~30 ↔ CDP 포트 변환과 슬롯별 고정 색.
+// 슬롯 번호 ↔ CDP 포트 변환과 슬롯별 색.
 import { CdpmError } from './errors.js';
 
 export const MIN_SLOT = 1;
-export const MAX_SLOT = 30;
+/**
+ * 슬롯은 99번까지 (예전에는 30번까지). 번호가 두 자리 안이라 아이콘·창 이름·상태줄에서 한눈에 읽힌다.
+ * 실제로 몇 개까지 켤 수 있는지는 PC 메모리가 정한다 (Chrome 하나가 수백 MB).
+ */
+export const MAX_SLOT = 99;
+/** 켜진 슬롯·빈 슬롯을 찾을 때 한 번에 살펴보는 번호 묶음 (포트 99개를 매번 다 두드리지 않게) */
+export const SCAN_BLOCK = 30;
 
 /**
- * 슬롯 N의 포트 = PORT_BASE + N (기본 1번=14050 … 30번=14079).
+ * 슬롯 N의 포트 = PORT_BASE + N (기본 1번=14050, 30번=14079, 99번=14148).
  * 다른 도구가 흔히 쓰는 9222를 피하려고 잘 안 쓰는 구간을 쓴다. 그 구간을 다른 프로그램이 쓰면 CDPM_PORT_BASE로 옮긴다.
  * 통합 테스트는 CDPM_TEST_PORT_BASE로 실제 슬롯과 부딪히지 않게 한다.
  */
@@ -15,7 +21,8 @@ export const PORT_BASE = portBaseFrom(process.env.CDPM_TEST_PORT_BASE || process
 export function portBaseFrom(value: string | undefined): number {
   const n = Number(value);
   // 예약 포트(1023 이하)와 65535를 넘는 값은 받지 않는다
-  return Number.isInteger(n) && n >= 1023 && n + MAX_SLOT <= 65535 ? n : DEFAULT_PORT_BASE;
+  // (전에 받던 값은 계속 받는다: 30번까지 들어가면 된다. 그 뒤 번호는 포트가 65535를 넘지 않는 데까지만 쓸 수 있다)
+  return Number.isInteger(n) && n >= 1023 && n + 30 <= 65535 ? n : DEFAULT_PORT_BASE;
 }
 
 export function portOf(slot: number): number {
@@ -24,7 +31,7 @@ export function portOf(slot: number): number {
 }
 
 export function isValidSlot(slot: unknown): slot is number {
-  return typeof slot === 'number' && Number.isInteger(slot) && slot >= MIN_SLOT && slot <= MAX_SLOT;
+  return typeof slot === 'number' && Number.isInteger(slot) && slot >= MIN_SLOT && slot <= MAX_SLOT && PORT_BASE + slot <= 65535;
 }
 
 export function assertSlot(slot: unknown): asserts slot is number {
@@ -34,8 +41,8 @@ export function assertSlot(slot: unknown): asserts slot is number {
 }
 
 /**
- * 슬롯 N은 항상 N번째 색을 쓴다. 모두 흰 글씨 대비 4.5:1 이상.
- * 1–10: 서로 가장 잘 구분되는 기본색, 11–30: 진한 톤 변형.
+ * 슬롯 N은 항상 같은 색을 쓴다. 모두 흰 글씨 대비 4.5:1 이상.
+ * 1–10: 서로 가장 잘 구분되는 기본색, 11–30: 진한 톤 변형. 31번부터는 1번 색부터 다시 돈다 (31번 = 1번 색; 번호로 구분한다).
  */
 export const SLOT_COLORS: readonly string[] = [
   '#2563EB', // 1 파랑
@@ -72,7 +79,7 @@ export const SLOT_COLORS: readonly string[] = [
 
 export function colorOf(slot: number): string {
   assertSlot(slot);
-  return SLOT_COLORS[slot - 1];
+  return SLOT_COLORS[(slot - 1) % SLOT_COLORS.length];
 }
 
 export function hexToRgb(hex: string): [number, number, number] {

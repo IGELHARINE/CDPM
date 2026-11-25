@@ -7,7 +7,7 @@ import { listPages, probe, type PageTarget } from './cdp/targets.js';
 import { CdpmError } from './errors.js';
 import { withSlotLock } from './registry/lock.js';
 import { newSlotRecord, readRegistry, updateRegistry, type SlotRecord, type TabRecord } from './registry/store.js';
-import { MAX_SLOT, portOf } from './slots.js';
+import { MAX_SLOT, portOf, SCAN_BLOCK } from './slots.js';
 import { applyDock, DOCK_SUPPORTED } from './taskbar/dock.js';
 import { applyTaskbar, canApplyTaskbar } from './taskbar/watcher.js';
 import { ago, nowIso, pidAlive, secondsSince, sleep } from './util.js';
@@ -134,8 +134,14 @@ async function launchSlotLocked(slot: number, agent: string, opts: LaunchOptions
 
 /** 포트가 비어 있는(Chrome도 다른 프로그램도 없는) 슬롯을 작은 번호부터 n개. 모자라면 있는 만큼. */
 export async function freeSlots(n: number): Promise<number[]> {
-  const states = await Promise.all(Array.from({ length: MAX_SLOT }, (_, i) => probe(i + 1, 2000)));
-  return states.flatMap((s, i) => (s.state === 'free' ? [i + 1] : [])).slice(0, n);
+  // 작은 번호부터 한 묶음씩 살핀다 (필요한 만큼 찾으면 거기서 멈춘다)
+  const out: number[] = [];
+  for (let from = 1; from <= MAX_SLOT && out.length < n; from += SCAN_BLOCK) {
+    const nums = Array.from({ length: Math.min(SCAN_BLOCK, MAX_SLOT - from + 1) }, (_, i) => from + i);
+    const states = await Promise.all(nums.map((slot) => probe(slot, 2000)));
+    out.push(...nums.filter((_, i) => states[i].state === 'free'));
+  }
+  return out.slice(0, n);
 }
 
 /** 포트가 비어 있는 가장 작은 슬롯. 없으면 undefined. */
@@ -461,12 +467,18 @@ export function startSlotWatcher(intervalMs = 2000) {
   slotWatcher.unref();
 }
 
-/** 1~30번 중 실제로 Chrome이 떠 있는 슬롯 (CDPM 밖에서 띄운 것 포함). 기록부의 죽은 슬롯은 정리한다. */
+/**
+ * 실제로 Chrome이 떠 있는 슬롯. 기록부의 죽은 슬롯은 정리한다.
+ * 1~30번은 늘 살피고(CDPM 밖에서 띄운 것도 찾는다), 그 뒤 번호는 기록부에 있는 슬롯만 살핀다.
+ */
 export async function liveSlots(): Promise<[number, SlotRecord][]> {
   const reg = readRegistry();
   const out: [number, SlotRecord][] = [];
   const dead: number[] = [];
-  await Promise.all(Array.from({ length: MAX_SLOT }, (_, i) => i + 1).map(async (slot) => {
+  // 살필 번호: 1~30번 전부 + 기록부에 있는 그 뒤 번호 (뒤 번호 슬롯 하나 때문에 빈 포트 수십 개를 두드리지 않게)
+  const beyond = Object.keys(reg.slots).map(Number).filter((n) => Number.isInteger(n) && n > SCAN_BLOCK && n <= MAX_SLOT);
+  const nums = [...Array.from({ length: Math.min(SCAN_BLOCK, MAX_SLOT) }, (_, i) => i + 1), ...beyond];
+  await Promise.all(nums.map(async (slot) => {
     const rec = reg.slots[String(slot)];
     // 기록이 있는 슬롯은 넉넉히 기다린다 (바쁜 Chrome을 꺼진 것으로 오해해 기록을 지우지 않게)
     const p = await probe(slot, rec ? 5000 : 800);

@@ -6,7 +6,7 @@
 
 ![CDPM: numbered Chrome slots for Claude Code agents](https://raw.githubusercontent.com/IGELHARINE/CDPM/main/docs/media/social-card@2x.png)
 
-CDPM is an MCP server that keeps up to 30 Chrome instances ("slots") on fixed debugging ports and lets any number of Claude Code sessions and subagents drive them by number: *"open slot 3"*, *"log in on slot 1, then fill the form in slot 2"*. Each slot is an ordinary Chrome with its own profile, so logins stick between runs and the browser is the same one you would use by hand.
+CDPM is an MCP server that keeps up to 99 Chrome instances ("slots") on fixed debugging ports and lets any number of Claude Code sessions and subagents drive them by number: *"open slot 3"*, *"log in on slot 1, then fill the form in slot 2"*. Each slot is an ordinary Chrome with its own profile, so logins stick between runs and the browser is the same one you would use by hand.
 
 It grew out of running several Claude agents against logged-in web apps at once, where the hard parts were not clicking buttons but sharing browsers between sessions, keeping them alive, and noticing when Chrome itself got in the way.
 
@@ -37,7 +37,7 @@ Restart Claude Code and ask for a slot, for example: *"Open slot 1 with a window
 
 | | CDPM | Playwright MCP | Chrome DevTools MCP |
 | --- | --- | --- | --- |
-| Browsers | up to 30 numbered slots shared by every session | one per server process | one per server process |
+| Browsers | up to 99 numbered slots shared by every session | one per server process | one per server process |
 | Several sessions on one browser | yes: per-tab queues, ownership warnings | not a design goal | not a design goal |
 | Logins kept between runs | yes, one profile per slot | yes, one persistent profile (`--isolated` for a fresh one) | yes, one persistent profile (`--isolated` for a fresh one) |
 | Driven by | raw CDP | Playwright | Puppeteer |
@@ -56,10 +56,10 @@ Text read from pages and messages from other agents are labelled as data, not in
 ## Details
 
 - **Pure CDP.** No Playwright, no Puppeteer, no stealth patches. A normal Chrome with a debugging port, driven with real input events.
-- **Numbered slots.** Slot *N* uses CDP port `14049 + N` (slot 1 = 14050 … slot 30 = 14079) and its own profile folder. The range avoids the common default 9222; set `CDPM_PORT_BASE` to move it if something else uses those ports. Ports outside that range are not managed.
+- **Numbered slots.** Slot *N* uses CDP port `14049 + N` (slot 1 = 14050 … slot 99 = 14148) and its own profile folder. How many you can actually run is up to the machine's memory. There are 30 slot colors, so slot 31 reuses slot 1's color (the number tells them apart). The range avoids the common default 9222; set `CDPM_PORT_BASE` to move it if something else uses those ports. Ports outside that range are not managed.
 - **Starts only when asked.** No tool ever starts a closed slot except `browser_launch`. Without a number, the lowest free slot is used.
 - **Slots outlive their caller.** Closing CDPM, Claude Code or VS Code (even when it kills its whole process tree) does not close slot Chrome. Slots end only with `browser_close` / `cdpm close` or when you close that Chrome yourself.
-- **One taskbar button per slot**, with a browser-window icon in the slot color and the slot number, pre-corrected so the taskbar shows it pixel-sharp (drawn with the system font via GDI+, so no font files ship in the repo). The window title shows "3번" via Chrome's own window-name feature (pages can't see it).
+- **One taskbar button per slot**, with the slot number as its icon: a digital-clock (seven-segment) number in the slot color with no background, pre-corrected so the taskbar shows it pixel-sharp (drawn in code without fonts, so it looks the same on every OS). The window title shows "3번" via Chrome's own window-name feature (pages can't see it).
 - **Slot-colored windows**: each slot's Chrome window (tab strip and toolbar) is tinted in the slot color, so any tab tells you which slot it belongs to at a glance (same color as the icon and status line). It uses Chrome's own theme feature, so pages cannot see it and page content is untouched. Turn it off with `"slotTheme": false` in `config.json`. Google account sync is off in slots so an account theme or extensions do not follow you into them (`"sync": true` turns it back on).
 - **Built for many agents.** Every tool takes `slot` explicitly, records who opened each tab and who touched it last, warns (without blocking) when you act on a tab someone else just used, and serializes concurrent commands on the same tab.
 - **Agents can talk** with `slot_send` / `slot_inbox`; unread messages are also delivered at the top of every result.
@@ -159,7 +159,7 @@ Each result starts with a header: the slot's tabs (`>` = acted on now, `·앞` =
 
 ## Tools
 
-All tools take `slot` (1–30) and `agent` (display name). Action tools also take `tab`, `summary` and `read`: `read: "text" | "snapshot" | "changes"` attaches the page after the action to the same result (no separate read call). `changes` shows only lines added or removed since the agent's previous snapshot of that page — the shortest way to see what a click did.
+All tools take `slot` (1–99) and `agent` (display name). Action tools also take `tab`, `summary` and `read`: `read: "text" | "snapshot" | "changes"` attaches the page after the action to the same result (no separate read call). `changes` shows only lines added or removed since the agent's previous snapshot of that page — the shortest way to see what a click did.
 
 | Tool | What it does |
 |---|---|
@@ -245,7 +245,7 @@ Data lives in `%LOCALAPPDATA%\cdpm\` on Windows `~/Library/Application Support/c
 
 ## Verification
 
-75 unit and 52 integration tests (`npm test`, `npm run test:integration`, real Chrome on test ports 29222+). Long-running checks (`npm run test:long`, ~20 min): 4,000 rounds on an SPA that replaces its DOM, with a new agent name every round, kept the CDPM server heap within a fixed band (26–39 MB, no upward trend) and the page at 1,421 DOM nodes / 0.8 MB JS heap; 3 sessions sharing one slot for 600 rounds each (1,800 tabs opened and closed, the slot restarted 3 times) stayed at ~20 MB heap per session with no lock files or tabs left behind. A 15-subagent, 30-slot concurrent run confirmed that all 30 windows' position/size/state and all 52 tabs' viewport (`innerWidth×innerHeight`) and zoom were unchanged.
+77 unit and 53 integration tests (`npm test`, `npm run test:integration`, real Chrome on test ports 29222+). Long-running checks (`npm run test:long`, ~20 min): 4,000 rounds on an SPA that replaces its DOM, with a new agent name every round, kept the CDPM server heap within a fixed band (26–39 MB, no upward trend) and the page at 1,421 DOM nodes / 0.8 MB JS heap; 3 sessions sharing one slot for 600 rounds each (1,800 tabs opened and closed, the slot restarted 3 times) stayed at ~20 MB heap per session with no lock files or tabs left behind. A 15-subagent, 30-slot concurrent run confirmed that all 30 windows' position/size/state and all 52 tabs' viewport (`innerWidth×innerHeight`) and zoom were unchanged.
 
 ## License
 

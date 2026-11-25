@@ -1,10 +1,10 @@
-// 슬롯 번호 아이콘을 외부 라이브러리 없이 그린다: 거리장(SDF) 안티앨리어싱 → PNG → ICO.
+// 슬롯 번호 아이콘을 외부 라이브러리 없이 그린다: 거리로 계산한 부드러운 가장자리 → PNG → ICO.
+// 모양: 배경 없이 슬롯 색 전자시계(7세그먼트) 숫자 + 아래 그림자. 글꼴을 쓰지 않아 Windows·macOS·Linux에서 똑같이 나온다.
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { paths } from '../paths.js';
 import { colorOf, hexToRgb } from '../slots.js';
-import { renderPngsWithGdi } from './icon-gdi.js';
 
 export const ICON_SIZES = [16, 20, 24, 32, 40, 48, 64, 256];
 /**
@@ -13,135 +13,99 @@ export const ICON_SIZES = [16, 20, 24, 32, 40, 48, 64, 256];
  * (항목 크기 → 작업표시줄에 보이는 크기: 32→24, 40→30, 48→36, 64→48. 배율 100/125/150/200%)
  */
 const TASKBAR_SOURCE: Record<number, number> = { 32: 24, 40: 30, 48: 36, 64: 48 };
-const RENDER_SIZES = [...new Set([...ICON_SIZES.filter((s) => !(s in TASKBAR_SOURCE)), ...Object.values(TASKBAR_SOURCE)])].sort((a, b) => a - b);
 /** 그리는 방식을 바꾸면 올린다. 저장된 아이콘을 다시 만들게 된다. */
-export const ICON_VERSION = 19;
+export const ICON_VERSION = 20;
 
-type Pt = [number, number];
-type Seg = [Pt, Pt];
+// ---- 7세그먼트 숫자 (전자시계 모양). 배경 없이 슬롯 색 숫자만 떠 있고, 아래로 옅은 그림자가 진다 ----
+/** 숫자마다 켜지는 세그먼트 (a 위, b 오른쪽 위, c 오른쪽 아래, d 아래, e 왼쪽 아래, f 왼쪽 위, g 가운데) */
+const LIT: Record<string, string> = { 0: 'abcdef', 1: 'bc', 2: 'abged', 3: 'abgcd', 4: 'fgbc', 5: 'afgcd', 6: 'afgedc', 7: 'abc', 8: 'abcdefg', 9: 'abfgcd' };
 
-// ---- 숫자 글리프 (단위 상자: 폭 GW, 높이 1, y는 아래로) ----
-const GW = 0.6;
-const STROKE = 0.17;
-const M = STROKE / 2;
-const L = M, R = GW - M, T = M, B = 1 - M, CX = GW / 2, MID = 0.5;
-const RX = (R - L) / 2;
+/** 세그먼트 하나: 가운데(cx, cy), 길이 len, 두께 t. 양 끝이 뾰족한 육각형 막대. */
+interface Bar { cx: number; cy: number; len: number; t: number; horizontal: boolean }
 
-function arc(cx: number, cy: number, rx: number, ry: number, a0: number, a1: number, n = 24): Pt[] {
-  const pts: Pt[] = [];
-  for (let i = 0; i <= n; i++) {
-    const a = ((a0 + ((a1 - a0) * i) / n) * Math.PI) / 180;
-    pts.push([cx + rx * Math.cos(a), cy + ry * Math.sin(a)]);
+/** 아이콘 크기에 대한 비율: 숫자 높이, 숫자가 쓸 수 있는 폭, 글자 폭(높이 대비), 글자 사이(폭 대비), 세그먼트 두께(폭 대비), 세그먼트 사이 틈(두께 대비) */
+const DIGIT_H = 0.8, AREA_W = 0.92, DIGIT_W = 0.56, SPACING = 0.28, THICK = 0.2, GAP = 0.12;
+/** 그림자: 아래로 떨어지는 거리, 번지는 반경(아이콘 크기 대비), 진하기 */
+const SHADOW_DY = 1.6 / 64, SHADOW_BLUR = 2.4 / 64, SHADOW_ALPHA = 0.55;
+
+/** 번호의 켜진 세그먼트들. 한 자리·두 자리 모두 아이콘 가운데에 온다 ("1"처럼 한쪽만 켜지는 숫자도 보이는 부분 기준으로). */
+export function barsFor(text: string, size: number): Bar[] {
+  let h = size * DIGIT_H, w = h * DIGIT_W, sp = w * SPACING;
+  const fit = Math.min(1, (size * AREA_W) / (text.length * w + (text.length - 1) * sp));
+  h *= fit; w *= fit; sp *= fit;
+  let t = w * THICK;
+  // 작은 크기(작업표시줄 16~48px 등)는 두께와 위치를 정수 픽셀에 맞춘다: 세그먼트의 곧은 변이 픽셀 경계에 놓여 번지지 않는다
+  const snap = size <= 64 ? Math.round : (v: number) => v;
+  if (size <= 64) {
+    t = Math.max(1, Math.round(t));
+    h = Math.max(t * 3 + 2, Math.round(h));
+    if ((h - t) % 2) h += 1;        // 가운데 세그먼트가 위·아래 한가운데의 정수 픽셀에 오게
+    w = Math.max(t * 2 + 1, Math.round(w));
+    sp = Math.max(1, Math.round(sp));
   }
-  return pts;
-}
-
-function quad(p0: Pt, c: Pt, p1: Pt, n = 16): Pt[] {
-  const pts: Pt[] = [];
-  for (let i = 0; i <= n; i++) {
-    const t = i / n, u = 1 - t;
-    pts.push([u * u * p0[0] + 2 * u * t * c[0] + t * t * p1[0], u * u * p0[1] + 2 * u * t * c[1] + t * t * p1[1]]);
-  }
-  return pts;
-}
-
-const poly = (...pts: Pt[]): Pt[] => pts;
-
-function six(): Pt[][] {
-  const ry = (B - 0.4) / 2;
-  const cy = B - ry;
-  return [
-    arc(CX, cy, RX, ry, 0, 360, 40),
-    quad([R - 0.04, T + 0.02], [L, T + 0.02], [L, cy]),
-  ];
-}
-
-const GLYPHS: Record<string, Pt[][]> = {
-  '0': [[...arc(CX, T + RX, RX, RX, 180, 360), ...arc(CX, B - RX, RX, RX, 0, 180), [L, T + RX]]],
-  '1': [poly([CX + 0.06, T], [CX + 0.06, B]), poly([CX + 0.06, T], [L + 0.02, T + 0.2])],
-  '2': [[...arc(CX, T + RX * 0.95, RX, RX * 0.95, 195, 375), [L, B], [R, B]]],
-  '3': [
-    arc(CX, T + (MID - T) / 2, RX * 0.92, (MID - T) / 2, 200, 450),
-    arc(CX, MID + (B - MID) / 2, RX, (B - MID) / 2, 270, 520),
-  ],
-  '4': [poly([R - 0.1, B], [R - 0.1, T], [L, 0.68], [R, 0.68])],
-  '5': [
-    poly([R, T], [L + 0.03, T], [L + 0.01, 0.47]),
-    arc(CX, B - (B - 0.4) / 2, RX, (B - 0.4) / 2, 215, 505),
-  ],
-  '6': six(),
-  '7': [poly([L, T], [R, T], [L + 0.1, B])],
-  '8': [
-    arc(CX, T + (MID - T) / 2, RX * 0.86, (MID - T) / 2, 0, 360, 40),
-    arc(CX, MID + (B - MID) / 2, RX, (B - MID) / 2, 0, 360, 40),
-  ],
-  '9': six().map((line) => line.map(([x, y]) => [GW - x, 1 - y] as Pt)),
-};
-
-function segmentsFor(text: string, size: number): { segs: Seg[]; stroke: number } {
-  const gap = 0.1;
-  const advance = GW + gap;
-  const textW = text.length * GW + (text.length - 1) * gap;
-  // 한 자리는 높이로, 두 자리는 폭으로 크기가 정해진다.
-  const scale = Math.min(size * 0.64, (size * 0.8) / textW);
-  const ox = (size - textW * scale) / 2;
-  const oy = (size - scale) / 2;
-  const segs: Seg[] = [];
+  const gap = size <= 64 ? Math.min(0.5, t * GAP) : t * GAP;
+  const lh = w - t - gap * 2, lv = (h - t) / 2 - gap * 2, q = (h - t) / 4;
+  const x0 = snap((size - (text.length * w + (text.length - 1) * sp)) / 2), y = snap((size - h) / 2);
+  const bars: Bar[] = [];
   [...text].forEach((ch, i) => {
-    for (const line of GLYPHS[ch] ?? []) {
-      for (let k = 0; k + 1 < line.length; k++) {
-        const a = line[k], b = line[k + 1];
-        segs.push([
-          [ox + (a[0] + i * advance) * scale, oy + a[1] * scale],
-          [ox + (b[0] + i * advance) * scale, oy + b[1] * scale],
-        ]);
-      }
-    }
+    const x = x0 + i * (w + sp);
+    const all: Record<string, Bar> = {
+      a: { cx: x + w / 2, cy: y + t / 2, len: lh, t, horizontal: true },
+      g: { cx: x + w / 2, cy: y + h / 2, len: lh, t, horizontal: true },
+      d: { cx: x + w / 2, cy: y + h - t / 2, len: lh, t, horizontal: true },
+      f: { cx: x + t / 2, cy: y + t / 2 + q, len: lv, t, horizontal: false },
+      b: { cx: x + w - t / 2, cy: y + t / 2 + q, len: lv, t, horizontal: false },
+      e: { cx: x + t / 2, cy: y + h / 2 + q, len: lv, t, horizontal: false },
+      c: { cx: x + w - t / 2, cy: y + h / 2 + q, len: lv, t, horizontal: false },
+    };
+    for (const k of LIT[ch] ?? '') bars.push(all[k]);
   });
-  return { segs, stroke: STROKE * scale };
+  // 켜진 부분의 좌우 끝을 기준으로 가운데에 놓는다
+  let lo = Infinity, hi = -Infinity;
+  for (const b of bars) {
+    const half = b.horizontal ? b.len / 2 : b.t / 2;
+    lo = Math.min(lo, b.cx - half);
+    hi = Math.max(hi, b.cx + half);
+  }
+  const dx = bars.length ? snap(size / 2 - (lo + hi) / 2) : 0;
+  return bars.map((b) => ({ ...b, cx: b.cx + dx }));
 }
 
-function distToSeg(px: number, py: number, [[ax, ay], [bx, by]]: Seg): number {
-  const dx = bx - ax, dy = by - ay;
-  const len2 = dx * dx + dy * dy;
-  let t = len2 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
-  t = Math.max(0, Math.min(1, t));
-  const qx = ax + t * dx - px, qy = ay + t * dy - py;
-  return Math.sqrt(qx * qx + qy * qy);
-}
-
-/** 둥근 사각형의 부호 있는 거리 (안쪽이 음수). */
-function roundRectSdf(px: number, py: number, size: number, r: number): number {
-  const h = size / 2;
-  const qx = Math.abs(px - h) - (h - r);
-  const qy = Math.abs(py - h) - (h - r);
-  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+/** 점에서 세그먼트까지의 거리 (안쪽이 음수). 양 끝은 45°로 뾰족하다. */
+function barDist(px: number, py: number, b: Bar): number {
+  const along = Math.abs(b.horizontal ? px - b.cx : py - b.cy);
+  const across = Math.abs(b.horizontal ? py - b.cy : px - b.cx);
+  return across + Math.max(0, along - (b.len / 2 - b.t / 2)) - b.t / 2;
 }
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
-/** RGBA 픽셀 (size×size×4). */
-export function renderIcon(slot: number, size: number): Buffer {
-  const [br, bg, bb] = hexToRgb(colorOf(slot));
-  const { segs, stroke } = segmentsFor(String(slot), size);
-  const half = stroke / 2;
-  const radius = size * 0.2;
+/** RGBA 픽셀 (size×size×4, 알파를 곱하지 않은 색). 배경은 투명. shadow: 그림자 진하기 (0이면 그림자 없음). */
+export function renderIcon(slot: number, size: number, shadow = SHADOW_ALPHA): Buffer {
+  const [cr, cg, cb] = hexToRgb(colorOf(slot));
+  const bars = barsFor(String(slot), size);
+  const dy = size * SHADOW_DY, blur = Math.max(0.75, size * SHADOW_BLUR);
   const out = Buffer.alloc(size * size * 4);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const px = x + 0.5, py = y + 0.5;
-      const bgCov = clamp01(0.5 - roundRectSdf(px, py, size, radius));
-      let d = Infinity;
-      for (const s of segs) {
-        const v = distToSeg(px, py, s);
+      let d = Infinity, ds = Infinity;
+      for (const b of bars) {
+        const v = barDist(px, py, b);
         if (v < d) d = v;
+        const s = barDist(px, py - dy, b);
+        if (s < ds) ds = s;
       }
-      const fg = clamp01(half - d + 0.5);
+      const fg = clamp01(0.5 - d);                                   // 숫자가 이 픽셀을 덮는 정도
+      const sh = shadow * clamp01(0.5 - ds / (2 * blur));      // 그림자 (가장자리가 blur만큼 번짐)
+      const alpha = fg + sh * (1 - fg);
       const i = (y * size + x) * 4;
-      out[i] = Math.round(br + (255 - br) * fg);
-      out[i + 1] = Math.round(bg + (255 - bg) * fg);
-      out[i + 2] = Math.round(bb + (255 - bb) * fg);
-      out[i + 3] = Math.round(255 * bgCov);
+      if (alpha <= 0) continue;
+      // 숫자(슬롯 색)를 그림자(검정) 위에 올린다
+      out[i] = Math.round((cr * fg) / alpha);
+      out[i + 1] = Math.round((cg * fg) / alpha);
+      out[i + 2] = Math.round((cb * fg) / alpha);
+      out[i + 3] = Math.round(255 * alpha);
     }
   }
   return out;
@@ -277,12 +241,11 @@ const rgbaToBgra = (rgba: Buffer) => {
   return out;
 };
 
-/** Windows에서는 GDI+로 유리 브라우저 창 디자인을, 그 밖에서는 기본 그리기(둥근 사각형 + 선 숫자)를 쓴다. */
+/** 슬롯 아이콘 파일(.ico) 내용. 모든 크기를 같은 그리기로 만든다. */
 export function buildIcon(slot: number): Buffer {
-  const gdi = renderPngsWithGdi(slot, colorOf(slot), RENDER_SIZES);
-  const pixels = (size: number) => (gdi ? gdi.get(size)!.bgra : rgbaToBgra(renderIcon(slot, size)));
+  const pixels = (size: number) => rgbaToBgra(renderIcon(slot, size));
   return encodeIco(ICON_SIZES.map((size) => {
-    if (size >= 256) return { size, data: gdi ? gdi.get(size)!.png : encodePng(renderIcon(slot, size), size) };
+    if (size >= 256) return { size, data: encodePng(renderIcon(slot, size), size) };
     const src = TASKBAR_SOURCE[size];
     return { size, data: encodeDib(src && process.platform === 'win32' ? precompensate(pixels(src), src) : pixels(size), size) };
   }));

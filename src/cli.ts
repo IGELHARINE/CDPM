@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import { CdpmError } from './errors.js';
 import { paths } from './paths.js';
-import { assertSlot, PORT_BASE, portOf } from './slots.js';
+import { assertSlot, MAX_SLOT, PORT_BASE, portOf } from './slots.js';
 import { pidAlive, sleep } from './util.js';
 import { VERSION } from './version.js';
 
@@ -38,7 +38,7 @@ const HELP = `cdpm ${VERSION} - CDP Manager
   cdpm setup               상태줄 + CLAUDE.md 병렬 처리 규칙 + 전용 서브에이전트(cdpm-browser) + 권한 허용 목록 넣기 (MCP 서버가 처음 켜질 때 자동으로도 함)
   cdpm unsetup             CDPM이 넣은 상태줄·CLAUDE.md 규칙·서브에이전트·권한 빼기
 
-슬롯은 1~30번, 슬롯 N의 CDP 포트는 ${PORT_BASE}+N 입니다 (1번=${PORT_BASE + 1}, CDPM_PORT_BASE로 바꿀 수 있음).`;
+슬롯은 1~${MAX_SLOT}번, 슬롯 N의 CDP 포트는 ${PORT_BASE}+N 입니다 (1번=${PORT_BASE + 1}, CDPM_PORT_BASE로 바꿀 수 있음).`;
 
 function slotsFrom(args: string[]): number[] {
   return args.map((a) => {
@@ -87,7 +87,7 @@ async function main(argv: string[]) {
       let slots = slotsFrom(slotArgs);
       if (!slots.length) {
         const free = await firstFreeSlot();
-        if (free === undefined) throw new CdpmError('비어 있는 슬롯이 없어요 (1~30번 모두 사용 중).');
+        if (free === undefined) throw new CdpmError(`비어 있는 슬롯이 없어요 (1~${MAX_SLOT}번 모두 사용 중).`);
         slots = [free];
       }
       // 여러 개를 한 번에 켜면 작은 번호부터 (작업표시줄에도 그 순서로 놓인다)

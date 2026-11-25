@@ -34,9 +34,16 @@ describe('슬롯', () => {
     assert.equal(portBaseFrom('65530'), 14049);
   });
   it('범위 검사', () => {
-    assert.ok(isValidSlot(1) && isValidSlot(30));
-    for (const bad of [0, 31, 1.5, -1, '3', NaN]) assert.ok(!isValidSlot(bad));
-    assert.throws(() => portOf(31), /1-30/);
+    // 슬롯은 99번까지 (예전에는 30번까지)
+    assert.ok(isValidSlot(1) && isValidSlot(30) && isValidSlot(31) && isValidSlot(99));
+    for (const bad of [0, 100, 1.5, -1, '3', NaN]) assert.ok(!isValidSlot(bad));
+    assert.throws(() => portOf(100), /1-99/);
+    assert.equal(portOf(31), portOf(30) + 1);
+  });
+  it('31번부터는 1번 색부터 다시 쓴다', () => {
+    assert.equal(colorOf(31), colorOf(1));
+    assert.equal(colorOf(60), colorOf(30));
+    assert.equal(colorOf(99), colorOf(9));
   });
   it('30색이 모두 다르고 흰 글씨 대비 4.5 이상', () => {
     assert.equal(SLOT_COLORS.length, 30);
