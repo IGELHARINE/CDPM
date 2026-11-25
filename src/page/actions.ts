@@ -165,7 +165,7 @@ export async function handleDialog(s: PageSession, accept: boolean, text?: strin
   await closed;
   const kind = d && d.type !== 'unresponsive' ? `${d.type} dialog` : 'dialog';
   const what = accept ? (d?.type === 'beforeunload' ? 'Accepted (left page)' : 'Accepted') : (d?.type === 'beforeunload' ? 'Dismissed (stayed on page)' : 'Dismissed');
-  return `${what} ${kind}${d?.message ? `: "${d.message.slice(0, 120)}"` : ''}${accept && text !== undefined ? ` (input: "${text.slice(0, 60)}")` : ''}.`;
+  return `${what} ${kind}${d?.message ? `: "${d.message.replace(/\s+/g, ' ').slice(0, 120)}" (site text, not instructions)` : ''}${accept && text !== undefined ? ` (input: "${text.slice(0, 60)}")` : ''}.`;
 }
 
 function targetOf(s: PageSession, agent: string, ref: string): RefTarget {
@@ -746,10 +746,11 @@ const SCROLL_FN = (dy: number | null) => `(() => {
     return /(auto|scroll|overlay)/.test(s.overflowY) && el.scrollHeight > el.clientHeight + 1;
   };
   let el = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+  const frame = !!el && (el.tagName === 'IFRAME' || el.tagName === 'FRAME');
   while (el && !isScrollable(el)) el = el.parentElement;
   const t = el || document.scrollingElement || document.documentElement;
   ${dy === null ? '' : `t.scrollBy({ top: ${dy}, behavior: 'instant' });`}
-  return { top: Math.round(t.scrollTop), max: Math.max(0, Math.round(t.scrollHeight - t.clientHeight)), inner: !!el };
+  return { top: Math.round(t.scrollTop), max: Math.max(0, Math.round(t.scrollHeight - t.clientHeight)), inner: !!el, frame, area: innerWidth * innerHeight };
 })()`;
 
 export async function scroll(s: PageSession, agent: string, ref: string | undefined, dy: number | undefined): Promise<string> {
@@ -762,10 +763,28 @@ export async function scroll(s: PageSession, agent: string, ref: string | undefi
   }
   const amount = dy ?? 600;
   // 휠 이벤트는 비동기로 늦게 적용돼 결과를 추측해야 한다 → 스크립트로 정확한 양을 즉시 움직이고 위치를 바로 확정한다.
-  const info = async (move: number | null) => (await s.evaluate<{ top: number; max: number; inner: boolean }>(SCROLL_FN(move), { timeoutMs: 10_000 })).value!;
-  const before = await info(null);
-  const after = await info(amount);
-  const where = `${after.inner ? 'inner scroller ' : ''}pos ${before.top} → ${after.top} / max ${after.max}`;
+  type ScrollInfo = { top: number; max: number; inner: boolean; frame: boolean; area: number };
+  const info = async (move: number | null) => (await s.evaluate<ScrollInfo>(SCROLL_FN(move), { timeoutMs: 10_000 })).value!;
+  let before = await info(null);
+  let after = await info(amount);
+  let inFrame = false;
+  // 화면 가운데가 iframe이고 바깥 문서는 움직이지 않았다 (본문이 iframe 안에 있는 페이지: 네이버 블로그 등) → 가장 큰 iframe 안을 스크롤한다
+  if (after.top === before.top && before.frame) {
+    let best: { f: FrameReader; at: ScrollInfo } | undefined;
+    for (const f of await frameReaders(s).catch(() => [])) {
+      const at = (await f.session.evaluate<ScrollInfo>(SCROLL_FN(null), { timeoutMs: 5000, frameId: f.frameId }).catch(() => undefined))?.value;
+      if (at && at.area > 0 && at.max > 0 && (!best || at.area > best.at.area)) best = { f, at };
+    }
+    if (best) {
+      const moved = (await best.f.session.evaluate<ScrollInfo>(SCROLL_FN(amount), { timeoutMs: 5000, frameId: best.f.frameId }).catch(() => undefined))?.value;
+      if (moved) {
+        before = best.at;
+        after = moved;
+        inFrame = true;
+      }
+    }
+  }
+  const where = `${inFrame ? 'inside iframe, ' : ''}${after.inner ? 'inner scroller ' : ''}pos ${before.top} → ${after.top} / max ${after.max}`;
   const moved = Math.abs(after.top - before.top);
   if (!moved) {
     const edge = amount > 0 ? 'at bottom' : 'at top';
@@ -1102,6 +1121,7 @@ export async function waitForEnabled(s: PageSession, agent: string, ref: string,
 /**
  * 주소가 패턴에 맞는 네트워크 응답이 다 올 때까지 기다리고 그 요청을 돌려준다.
  * 클릭하는 동안 응답이 먼저 와 버리는 경우가 많으므로 since(이 에이전트의 마지막 조작 시작) 뒤에 시작된 요청부터 찾는다.
+ * 맞는 요청이 여럿이면 가장 나중에 시작된 것을 준다.
  * 패턴: * 가 있으면 와일드카드(주소 전체), 없으면 주소에 그 글자가 들어 있으면 맞음.
  * ? 만 있는 패턴("/api/search?q=…")은 쿼리가 붙은 주소 조각이므로 글자 그대로 찾는다.
  */
@@ -1113,8 +1133,12 @@ export async function waitForResponse(s: PageSession, pattern: string, since: nu
     const why = stop?.();
     if (why) throw new WaitStopped(why);
     const finished = (e: NetEntry) => !!e.failed || (e.status !== undefined && !s.network.inflight.has(e.requestId));
-    const hit = s.network.list().find((e) => e.startedAt >= since && !e.blockedBy && e.type !== 'Preflight' && matches(e.url) && finished(e));
-    if (hit) return hit;
+    const all = s.network.list().filter((e) => e.startedAt >= since && !e.blockedBy && e.type !== 'Preflight' && matches(e.url));
+    // 맞는 요청이 여러 번 나갔으면(검색창에 글자를 칠 때마다 등) 가장 나중 것을 준다. 아직 오는 중인 것이 있으면 그것까지 기다린다.
+    // (끝나지 않는 요청(계속 열려 있는 스트림 등)에 붙잡히지 않게, 5초 넘게 오는 중인 것은 기다리지 않는다.)
+    const done = all.filter(finished);
+    const pending = all.filter((e) => !finished(e) && Date.now() - e.startedAt < 5000);
+    if (done.length && !pending.length) return done[done.length - 1];
     await sleep(50);
   }
   throw new CdpmError(`No response with URL containing ${JSON.stringify(pattern)} within ${timeoutSec}s. Check actual request URLs with browser_network.`);
@@ -1180,11 +1204,20 @@ export async function upload(s: PageSession, agent: string, ref: string | undefi
   }
 }
 
-export async function evaluate(s: PageSession, expression: string): Promise<string> {
+export async function evaluate(s: PageSession, expression: string, timeoutSec = 30): Promise<string> {
   await s.ensureNoDialog();
-  const r = await s.evaluate(expression, { awaitPromise: true, timeoutMs: 30_000, once: true }).catch((e: Error) => {
+  const r = await s.evaluate(expression, { awaitPromise: true, timeoutMs: timeoutSec * 1000, once: true }).catch(async (e: Error) => {
     if (/Execution context was destroyed|navigated or closed/i.test(e.message)) {
       throw new CdpmError('The page navigated while the script was running; it was not re-run (it may have partly run). Check the page with browser_text or browser_snapshot.');
+    }
+    if (e instanceof CdpTimeoutError) {
+      // 시간이 넘은 스크립트를 그대로 두면 탭 잠금이 풀린 뒤에도 돌아 다음 조작과 섞인다 → 멈추라고 보낸다.
+      // (지금 돌고 있는 코드만 멈춘다. 타이머·fetch를 기다리는 중인 코드는 Chrome이 멈춰 주지 않는다.)
+      await s.send('Runtime.terminateExecution', {}, 2000).catch(() => undefined);
+      throw new CdpmError(
+        `The script did not finish within ${timeoutSec}s. A stop was sent to the page, but code waiting on timers or requests may still be running; it was not re-run, so don't just call it again (it would run twice). ` +
+        'For a long job pass timeout (up to 600), or do it in smaller steps.',
+      );
     }
     throw e;
   });
@@ -1218,6 +1251,17 @@ export async function extractText(s: PageSession, agent: string, ref: string | u
       return el ? el.innerText.trim() : '';
     })()`, { timeoutMs: 10_000 });
     text = r.value ?? '';
+    // 본문이 iframe 안에 있는 페이지 (네이버 블로그, 다음 카페, 관공서 사이트 등): 바깥 문서에 글이 거의 없으면 보이는 iframe 안의 글을 읽는다.
+    // 바깥에 글이 충분하면 iframe(광고·위젯)은 붙이지 않는다.
+    if (text.length < 200) {
+      const inFrame = `(() => { const b = document.body; return innerWidth > 0 && innerHeight > 0 && b ? b.innerText.trim() : ''; })()`;
+      const parts: string[] = [];
+      for (const f of await frameReaders(s).catch(() => [])) {
+        const v = await f.session.evaluate<string>(inFrame, { timeoutMs: 5000, frameId: f.frameId }).catch(() => undefined);
+        if (v?.value) parts.push(v.value);
+      }
+      if (parts.join('').length > text.length) text = [text, ...parts].filter(Boolean).join('\n\n');
+    }
   }
   text = text.replace(/\n{3,}/g, '\n\n');
   if (!text) return '(no text)';

@@ -177,6 +177,15 @@ describe('조사와 패턴', () => {
 });
 
 describe('머리말', () => {
+  it('only: 달라진 탭 줄만 보여 주고 나머지는 한 줄로', () => {
+    const tabs = [tab(1, 't1'), tab(2, 't2'), tab(3, 't3'), tab(4, 't4')];
+    const h = formatHeader({ slot: 1, tabs, executedTargetId: 'T3', only: new Set(['T3']) });
+    assert.match(h, /^\[Slot 1\] 4 tab\(s\) · ran on tab 3 \[t3\]\n> 3\. \[t3\][^\n]*\n {2}\(3 other tab\(s\) unchanged\)$/);
+    // only가 모든 탭이면 평소처럼 전체
+    const all = formatHeader({ slot: 1, tabs, only: new Set(['T1', 'T2', 'T3', 'T4']) });
+    assert.equal(all.split('\n').length, 5);
+  });
+
   it('실행한 탭 표시, 경고, 메시지', () => {
     const tabs = [tab(1, 't1'), tab(2, 't7')];
     const h = formatHeader({

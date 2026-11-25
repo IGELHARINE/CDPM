@@ -166,8 +166,11 @@ server.listen(0, '127.0.0.1', () => {
   // 같은 포트에 다른 Chrome이 뜨면(슬롯을 끄고 다시 켬) 끝난다. 바빠서 늦게 답하는 것은 꺼진 것으로 세지 않는다.
   // (1분 넘게 한 번도 답이 없으면 그때는 끝난 것으로 본다: 혼자 남아 계속 떠 있지 않게)
   const started = Date.now();
-  let mine: string | undefined, misses = 0, lastSeen = Date.now();
+  let mine: string | undefined, misses = 0, lastSeen = Date.now(), lastCheck = Date.now();
   const check = async () => {
+    // 확인이 한참 밀렸으면(PC가 절전에서 깸) 그동안은 답을 못 받은 시간으로 치지 않는다: 깬 직후 Chrome이 잠깐 늦어도 끝내지 않게
+    if (Date.now() - lastCheck > 15_000) { lastSeen = Date.now(); misses = 0; }
+    lastCheck = Date.now();
     const { id, gone } = await chromeId();
     if (id && !mine) mine = id;
     if (id && mine && id !== mine) process.exit(0);

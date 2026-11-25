@@ -107,7 +107,7 @@ function dialogsOf(slot: number, tabs: TabView[]): Map<string, DialogInfo> {
 }
 
 /** 에이전트마다 마지막으로 보여준 탭 목록 (슬롯:에이전트 → 목록 요약). 바뀐 게 없으면 머리말을 한 줄로 줄인다. */
-const lastTabList = new Map<string, string>();
+const lastTabList = new Map<string, { per: Map<string, string>; blockSig: string }>();
 
 // 오래 안 나타난 에이전트(끝난 서브에이전트 등)의 기록을 지운다 (오래 켜 두어도 이름별 기록이 늘지 않게)
 onAgentForgotten((agent) => {
@@ -132,9 +132,11 @@ async function header(slot: number, agent: string, tabs: TabView[], opts: { exec
       warnings.push(notice.text);
     }
   }
+  // 차단 규칙은 바뀌었을 때만 다시 알린다 (규칙이 하나라도 있으면 호출마다 탭 목록 전체가 다시 나오던 것을 줄임)
+  const blockLines: string[] = [];
   for (const t of tabs) {
     const blocks = liveBlocks(t);
-    if (blocks.length) warnings.push(`[${t.id}] blocking requests: ${blocks.map((b) => `${b.pattern} (${b.agent})`).join(', ')}`);
+    if (blocks.length) blockLines.push(`[${t.id}] blocking requests: ${blocks.map((b) => `${b.pattern} (${b.agent})`).join(', ')}`);
   }
   // Chrome 권한 요청 말풍선 (페이지 밖 브라우저 화면이라 스냅샷에 안 보인다)
   for (const b of permissionBubbles(slot, hostsOf(tabs.map((t) => t.url)))) warnings.push(bubbleLine(b, await bubbleDetail(b)));
@@ -149,14 +151,27 @@ async function header(slot: number, agent: string, tabs: TabView[], opts: { exec
   const key = `${slot}:${agent}`;
   // 다른 에이전트가 한 행동은 서명에 넣어, 남이 건드리면 전체 목록을 다시 보여준다 (내 행동만으로는 줄인 머리말 유지)
   const others = (t: TabView) => (t.rec.last && t.rec.last.agent !== agent ? `${t.rec.last.agent}@${t.rec.last.at}` : '');
-  const sig = tabs.map((t) => `${t.id}|${t.active ? 1 : 0}|${t.url}|${t.title}|${others(t)}`).join('\n');
-  const same = lastTabList.get(key) === sig;
-  lastTabList.set(key, sig);
-  if (opts.compact && same && !warnings.length && !messages.length && !dialogs.size) {
+  const per = new Map(tabs.map((t) => [t.id, `${t.active ? 1 : 0}|${t.url}|${t.title}|${others(t)}`]));
+  const blockSig = blockLines.join('\n');
+  const prev = lastTabList.get(key);
+  lastTabList.set(key, { per, blockSig });
+  // 탭이 생기거나 없어지거나 순서가 바뀌지 않았으면 "같은 목록"으로 보고, 그 안에서 달라진 탭만 가린다
+  const sameSet = !!prev && prev.per.size === per.size && [...prev.per.keys()].join() === [...per.keys()].join();
+  const changed = sameSet ? tabs.filter((t) => prev!.per.get(t.id) !== per.get(t.id)) : tabs;
+  const blocksSame = !!prev && prev.blockSig === blockSig;
+  if (!opts.compact || !blocksSame) warnings.push(...blockLines);
+  if (opts.compact && sameSet && !changed.length && !warnings.length && !messages.length && !dialogs.size) {
     const exec = tabs.find((t) => t.targetId === opts.executed);
     return `[Slot ${slot}] ${tabs.length} tab(s)${exec ? ` · ran on tab ${exec.no} [${exec.id}]` : ''} (tab list unchanged)`;
   }
-  return formatHeader({ slot, tabs, executedTargetId: opts.executed, warnings, dialogs, messages });
+  // 탭 몇 개만 달라졌으면(제목이 바뀜, 남이 한 탭을 건드림 등) 그 탭 줄만 보여 준다: 탭이 많을수록 호출마다 읽는 양이 크게 준다
+  let only: Set<string> | undefined;
+  if (opts.compact && sameSet && tabs.length > 3 && changed.length <= tabs.length / 2) {
+    only = new Set(changed.map((t) => t.targetId));
+    if (opts.executed) only.add(opts.executed);
+    for (const t of tabs) if (dialogs.has(t.targetId)) only.add(t.targetId);
+  }
+  return formatHeader({ slot, tabs, executedTargetId: opts.executed, warnings, dialogs, messages, only });
 }
 
 function compose(head: string, out: Out): CallToolResult {
@@ -370,7 +385,13 @@ export function registerTools(server: McpServer) {
     // 시작 주소: urls는 slots에 준 순서(없으면 켜지는 번호 순서)대로, 나머지는 url
     const order = wantedList?.length ? [...new Set(wantedList)] : [...targets].sort((x, y) => x - y);
     const startUrl = new Map<number, string>();
-    order.forEach((t, i) => { const u = urls?.[i] ?? url; if (u) startUrl.set(t, u); });
+    // 시작 주소는 Chrome 실행 인자로 들어간다 → 옵션으로 읽힐 모양('-'·'/'로 시작)은 받지 않고, 늘 스킴이 붙은 주소로 넘긴다
+    order.forEach((t, i) => {
+      const u = (urls?.[i] ?? url)?.trim();
+      if (!u) return;
+      if (/^[-/]/.test(u)) throw new CdpmError(`Not a URL: ${u.slice(0, 80)} (for a local file use file:///…)`);
+      startUrl.set(t, act.withScheme(u));
+    });
     // 프록시: 사용자가 부탁했을 때만 값이 온다. 켜기 전에 형식부터 확인한다.
     const proxyOf = new Map<number, ProxySpec>();
     order.forEach((t, i) => { const p = proxies?.[i] ?? proxy; if (p) proxyOf.set(t, parseProxy(p)); });
@@ -859,7 +880,7 @@ export function registerTools(server: McpServer) {
         try {
           const e = await act.waitForResponse(s, args.response, since, args.timeout ?? 30, stop);
           if (e.failed) return { text: `Response failed: ${netLine(e)}` };
-          return { text: `Response received: ${netLine(e)}\nURL: ${decodeUrl(e.url).slice(0, 300)}\n\n[Response body]\n${await responseBody(s, e)}` };
+          return { text: `Response received: ${netLine(e)}\nURL: ${decodeUrl(e.url).slice(0, 300)}\n\n[Response body]\n${fencePage(await responseBody(s, e))}` };
         } catch (err) {
           if (err instanceof act.WaitStopped) return { text: err.message };
           throw err;
@@ -887,8 +908,8 @@ export function registerTools(server: McpServer) {
     title: 'Run JS',
     description: 'Evaluates a JavaScript expression in the tab and returns the result as JSON. Escape hatch only when other tools can\'t do it. ' +
       'Runs in an isolated world: DOM can be read and modified, but globals created by page scripts (window.appVar, etc.) are not visible.',
-    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, expression: z.string().describe('JS expression (Promises are awaited)'), summary: summaryArg },
-  }, async (args) => onTab(args, 'action', 'eval JS', async (s) => ({ text: await act.evaluate(s, args.expression) }), { page: true }));
+    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, expression: z.string().describe('JS expression (Promises are awaited)'), timeout: z.number().min(1).max(600).optional().describe('Max seconds to wait for the result (default 30). Raise it for long jobs (bulk collection, many requests) instead of re-running'), summary: summaryArg },
+  }, async (args) => onTab(args, 'action', 'eval JS', async (s) => ({ text: await act.evaluate(s, args.expression, args.timeout ?? 30) }), { page: true }));
 
   // ---------- 네트워크 ----------
   server.registerTool('browser_network', {

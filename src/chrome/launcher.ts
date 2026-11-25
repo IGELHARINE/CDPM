@@ -71,8 +71,9 @@ export interface Launched {
  * Chrome은 살아 있도록 부모 없는 프로세스로 띄운다 (orphan.ts).
  */
 export async function launchChrome(slot: number, opts: LaunchOptions = {}): Promise<Launched> {
-  // 시작 주소는 Chrome 실행 인자 끝에 붙는다. '-'로 시작하면 주소가 아니라 Chrome 옵션으로 읽힌다.
-  if (opts.url && /^\s*-/.test(opts.url)) throw new CdpmError(`Not a URL: ${opts.url.slice(0, 80)}`);
+  // 시작 주소는 Chrome 실행 인자 끝에 붙는다. '-'로 시작하면 주소가 아니라 Chrome 옵션으로 읽히고,
+  // Windows Chrome은 '/'로 시작하는 것도 옵션으로 읽는다 ("/disable-web-security").
+  if (opts.url && /^\s*[-/]/.test(opts.url)) throw new CdpmError(`Not a URL: ${opts.url.slice(0, 80)} (for a local file use file:///…)`);
   const chrome = findChrome();
   fs.mkdirSync(paths.profile(slot), { recursive: true });
   if (!opts.headless && readConfig().slotTheme !== false) clearForeignTheme(paths.profile(slot));
@@ -96,8 +97,14 @@ export async function launchChrome(slot: number, opts: LaunchOptions = {}): Prom
     }
     await sleep(100);
   }
+  // 포트를 열지 못한 Chrome을 남겨 두면 프로필을 붙잡고 있어 다음에 켤 때도 실패한다 → 방금 띄운 것만 정리한다
+  try {
+    process.kill(pid);
+  } catch {
+    // 이미 꺼졌음
+  }
   throw new CdpmError(
-    `Slot ${slot} Chrome started, but CDP port ${portOf(slot)} did not open within ${READY_TIMEOUT_MS / 1000}s. ` +
+    `Slot ${slot} Chrome started, but CDP port ${portOf(slot)} did not open within ${READY_TIMEOUT_MS / 1000}s, so it was closed again. ` +
     `A Chrome using the same profile (${paths.profile(slot)}) may already be running without a debugging port. Close it and try again.`,
   );
 }

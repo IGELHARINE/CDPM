@@ -10,6 +10,7 @@ import path from 'node:path';
 import { agentPath, registeredNames, setupAgent, setupPermissions } from './agent-setup.js';
 import { claudeMdPath, hasCdpmRules, setupClaudeMd } from './claude-md-setup.js';
 import { cdpmHome } from './paths.js';
+import { pidAlive } from './util.js';
 import { isStatuslineConfigured, setupStatusline } from './statusline-setup.js';
 
 /** 자동 설정 내용이 바뀌면 올린다 (그때 한 번 더 적용). */
@@ -103,7 +104,33 @@ export function runAutoSetup(items: SetupItem[], file = stateFile(), version = A
 
 export function autoSetupOnce(): string[] {
   if (process.env.CDPM_NO_AUTO_SETUP === '1' || process.env.CDPM_TEST_PORT_BASE) return [];
-  return runAutoSetup(setupItems());
+  // Claude 창 여러 개가 동시에 뜨면 각자의 CDPM이 같은 settings.json을 읽고 고쳐 쓰다 한쪽 변경이 사라질 수 있다 → 한 번에 하나만.
+  // 다른 CDPM이 하는 중이면 이번에는 건너뛴다 (그쪽이 끝내고 버전을 적는다. 못 끝냈으면 다음에 켜질 때 다시 한다).
+  const lock = path.join(cdpmHome(), 'auto-setup.lock');
+  try {
+    fs.mkdirSync(cdpmHome(), { recursive: true });
+    for (let i = 0; ; i++) {
+      try {
+        fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
+        break;
+      } catch {
+        const owner = Number(fs.readFileSync(lock, 'utf8'));
+        if (i > 0 || (owner && pidAlive(owner))) return [];
+        fs.unlinkSync(lock); // 하다가 죽은 CDPM이 남긴 잠금
+      }
+    }
+  } catch {
+    return []; // 잠금을 못 다루면 이번에는 하지 않는다 (다음에 다시)
+  }
+  try {
+    return runAutoSetup(setupItems());
+  } finally {
+    try {
+      fs.unlinkSync(lock);
+    } catch {
+      // 이미 없음
+    }
+  }
 }
 
 /** cdpm setup·install: 사용자가 직접 실행했으므로 지웠던 항목도 모두 다시 넣는다. */
