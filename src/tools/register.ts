@@ -907,9 +907,10 @@ export function registerTools(server: McpServer) {
   server.registerTool('browser_eval', {
     title: 'Run JS',
     description: 'Evaluates a JavaScript expression in the tab and returns the result as JSON. Escape hatch only when other tools can\'t do it. ' +
-      'Runs in an isolated world: DOM can be read and modified, but globals created by page scripts (window.appVar, etc.) are not visible.',
-    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, expression: z.string().describe('JS expression (Promises are awaited)'), timeout: z.number().min(1).max(600).optional().describe('Max seconds to wait for the result (default 30). Raise it for long jobs (bulk collection, many requests) instead of re-running'), summary: summaryArg },
-  }, async (args) => onTab(args, 'action', 'eval JS', async (s) => ({ text: await act.evaluate(s, args.expression, args.timeout ?? 30) }), { page: true }));
+      'Runs in an isolated world by default: DOM can be read and modified, but globals created by page scripts (window.appVar, etc.) are not visible, and the page cannot see this code. ' +
+      'world="page" runs it in the page\'s own world instead (page variables and functions are usable; top document only). The page can then observe what the code does (it goes through any functions the site has wrapped), so use it only when page variables/functions are really needed or the user asks.',
+    inputSchema: { slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg, expression: z.string().describe('JS expression (Promises are awaited)'), timeout: z.number().min(1).max(600).optional().describe('Max seconds to wait for the result (default 30). Raise it for long jobs (bulk collection, many requests) instead of re-running'), world: z.enum(['isolated', 'page']).optional().describe('isolated (default): separate from page scripts. page: the page\'s own world, to use variables/functions the site defined'), summary: summaryArg },
+  }, async (args) => onTab(args, 'action', 'eval JS', async (s) => ({ text: await act.evaluate(s, args.expression, args.timeout ?? 30, args.world === 'page') }), { page: true }));
 
   // ---------- 네트워크 ----------
   server.registerTool('browser_network', {

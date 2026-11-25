@@ -187,10 +187,21 @@ export class PageSession {
     }
   }
 
-  /** isolated world에서 식을 평가한다. */
-  async evaluate<T = unknown>(expression: string, opts: { timeoutMs?: number; awaitPromise?: boolean; frameId?: string; once?: boolean } = {}): Promise<{ value?: T; type: string; description?: string; unserializableValue?: string; exception?: string }> {
+  /**
+   * isolated world에서 식을 평가한다.
+   * pageWorld: 페이지 자신의 실행 공간(main world)에서 평가한다 (페이지가 만든 변수·함수가 보인다). 맨 위 문서만.
+   * 실행 공간 ID 없이 부르면 Chrome이 그 문서의 기본 공간에서 돌린다 → Runtime.enable 없이 된다.
+   * 페이지가 감싸 둔 함수(fetch 등)를 지나가므로 페이지가 이 코드의 동작을 볼 수 있다: 사용자가 고른 호출에만 쓴다.
+   */
+  async evaluate<T = unknown>(expression: string, opts: { timeoutMs?: number; awaitPromise?: boolean; frameId?: string; once?: boolean; pageWorld?: boolean } = {}): Promise<{ value?: T; type: string; description?: string; unserializableValue?: string; exception?: string }> {
+    type R = { result: { type: string; value?: T; description?: string; unserializableValue?: string }; exceptionDetails?: { text: string; exception?: { description?: string } } };
+    if (opts.pageWorld) {
+      const r = await this.conn.send<R>('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: opts.awaitPromise ?? false }, opts.timeoutMs);
+      if (r.exceptionDetails) return { type: 'exception', exception: r.exceptionDetails.exception?.description ?? r.exceptionDetails.text };
+      return r.result;
+    }
     return this.inWorld(opts.frameId, async (contextId) => {
-      const r = await this.conn.send<{ result: { type: string; value?: T; description?: string; unserializableValue?: string }; exceptionDetails?: { text: string; exception?: { description?: string } } }>(
+      const r = await this.conn.send<R>(
         'Runtime.evaluate', { expression, contextId, returnByValue: true, awaitPromise: opts.awaitPromise ?? false }, opts.timeoutMs,
       );
       if (r.exceptionDetails) return { type: 'exception', exception: r.exceptionDetails.exception?.description ?? r.exceptionDetails.text };

@@ -1204,9 +1204,9 @@ export async function upload(s: PageSession, agent: string, ref: string | undefi
   }
 }
 
-export async function evaluate(s: PageSession, expression: string, timeoutSec = 30): Promise<string> {
+export async function evaluate(s: PageSession, expression: string, timeoutSec = 30, pageWorld = false): Promise<string> {
   await s.ensureNoDialog();
-  const r = await s.evaluate(expression, { awaitPromise: true, timeoutMs: timeoutSec * 1000, once: true }).catch(async (e: Error) => {
+  const r = await s.evaluate(expression, { awaitPromise: true, timeoutMs: timeoutSec * 1000, once: true, pageWorld }).catch(async (e: Error) => {
     if (/Execution context was destroyed|navigated or closed/i.test(e.message)) {
       throw new CdpmError('The page navigated while the script was running; it was not re-run (it may have partly run). Check the page with browser_text or browser_snapshot.');
     }

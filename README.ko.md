@@ -235,7 +235,7 @@ MCP 서버가 처음 켜질 때 한 번, 따로 설정하지 않아도 다음을
 | `browser_press_key` | `Enter`, `Tab`, `Control+A`(macOS는 `Meta+A`) 등 (복사·붙여넣기 키는 거부) |
 | `browser_scroll` | ref로 스크롤 또는 정확히 `dy`픽셀 (결과에 위치 A → B) |
 | `browser_wait` | 글자(본문·제목)가 나타날 때까지 / `gone`(글자가 사라질 때까지) / `url`(주소가 바뀔 때까지) / `enabled`(버튼·입력칸이 눌릴 수 있게 될 때까지) / `response`(주소가 맞는 네트워크 응답이 다 올 때까지, 응답 본문을 돌려줌: SPA 목록 뒤의 JSON 등. 클릭하는 동안 이미 온 응답도 잡고, 요청을 새로 보내지 않음) / `network_idle` / N초 |
-| `browser_eval` | JavaScript 실행 (isolated world: DOM은 보이지만 페이지 전역 변수는 안 보임). 오래 걸리면 `timeout`(초, 기본 30, 최대 600) |
+| `browser_eval` | JavaScript 실행 (isolated world: DOM은 보이지만 페이지 전역 변수는 안 보임). 오래 걸리면 `timeout`(초, 기본 30, 최대 600). 페이지가 만든 변수·함수를 써야 하면 `world: "page"` (그 호출만 페이지 쪽에서 실행) |
 | `browser_network` / `browser_network_detail` | 요청 목록(최근 500개, 30분) / 헤더·보낸 데이터·응답 본문 |
 | `browser_block` | 탭에서 주소 패턴으로 요청 막기·해제. 그 탭 안의 다른 사이트 iframe에도 걸림 (이미 떠 있는 것도, 나중에 생기는 것도 첫 요청 전에). 그 세션이 살아 있는 동안만, 다른 에이전트에게도 표시 |
 | `slot_send` / `slot_inbox` | 에이전트에게 메시지 (받는 쪽 슬롯 번호로, 다른 슬롯 담당에게도) / 받기 (`wait`: 오는 즉시 0.1초 안에 돌아옴, 최대 600초). `browser_wait` 중에 메시지가 오면 기다리기가 바로 멈춤 |
@@ -320,7 +320,7 @@ Windows `%LOCALAPPDATA%\cdpm\`, macOS `~/Library/Application Support/cdpm/`, Lin
 
 ## 검증
 
-- 단위 테스트 75개, 통합 테스트 51개 (`npm test`, `npm run test:integration` — 테스트 포트 29222~로 진짜 Chrome 사용)
+- 단위 테스트 75개, 통합 테스트 52개 (`npm test`, `npm run test:integration` — 테스트 포트 29222~로 진짜 Chrome 사용)
 - 오래 켜 두기 시험 (`npm run test:long`, 약 20분): 화면을 계속 새로 그리는 SPA에서 반복마다 새 에이전트 이름으로 4,000회 → CDPM 서버 힙은 일정한 범위(26~39MB) 안에서만 오르내리고 계속 늘지 않음, 페이지는 요소 1,421개·JS 힙 0.8MB 그대로. 세션 3개가 한 슬롯을 600회씩 동시에 사용(탭 1,800개 열고 닫기, 중간에 슬롯 3번 재시작) → 세션마다 힙 약 20MB 그대로, 남은 잠금 파일·탭 없음.
 - 서브에이전트 15명이 슬롯 30개를 동시에 쓰는 실사용 테스트: 테스트 전후로 창 30개 위치·크기·상태, 탭 52개 뷰포트(`innerWidth×innerHeight`), 확대 비율이 모두 그대로임을 확인
 

@@ -525,6 +525,20 @@ describe('CDPM MCP 통합', { timeout: 180_000 }, () => {
     assert.match(r.text, /"undefined"/);
   });
 
+  it('world="page": 페이지 전역 변수가 보이고, 거기서 만든 값은 기본(isolated) 실행에서는 안 보임', async () => {
+    const A = { slot: SLOT, agent: 'A', tab: 't1' };
+    const seen = await call(a, 'browser_eval', { ...A, expression: 'typeof window.__pageVar', world: 'page' });
+    assert.equal(seen.isError, false, seen.text);
+    assert.doesNotMatch(seen.text, /"undefined"/, seen.text);
+    await call(a, 'browser_eval', { ...A, expression: 'window.__fromPageWorld = 42', world: 'page' });
+    const back = await call(a, 'browser_eval', { ...A, expression: 'window.__fromPageWorld', world: 'page' });
+    assert.match(back.text, /\n42\n/);
+    // 기본값은 그대로: 페이지 쪽 변수가 보이지 않는다
+    const iso = await call(a, 'browser_eval', { ...A, expression: 'typeof window.__fromPageWorld' });
+    assert.match(iso.text, /"undefined"/);
+    await call(a, 'browser_eval', { ...A, expression: 'delete window.__fromPageWorld', world: 'page' });
+  });
+
   it('네트워크 기록, 자세히, 요청 막기와 해제', async () => {
     const snap = (await call(a, 'browser_snapshot', { slot: SLOT, agent: 'A', tab: 't1', find: 'API' })).text;
     const api = ref(snap, /button "API 부르기" \[(e\d+)\]/);
