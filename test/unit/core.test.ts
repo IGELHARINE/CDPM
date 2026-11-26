@@ -1,5 +1,6 @@
 import type { SlotRecord } from '../../src/registry/store.js';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { describe, it } from 'node:test';
 import { chromeCandidates, findChromeWith } from '../../src/chrome/finder.js';
 import { macCommands, parseCombo } from '../../src/page/keys.js';
@@ -85,6 +86,32 @@ describe('Chrome 찾기', () => {
   });
   it('없으면 찾아본 경로를 알려줌', () => {
     assert.throws(() => findChromeWith(deps()), /Searched:[\s\S]*Program Files/);
+  });
+  it('다른 크로미움 계열 브라우저 (슬롯별): 그 브라우저 경로만 찾고, 크로미움 계열이 아니면 거절', async () => {
+    const win = chromeCandidates(deps({ browser: 'brave', regQuery: (k) => (k.endsWith('brave.exe') ? 'E:\\brave.exe' : undefined) }));
+    assert.equal(win[0], 'E:\\brave.exe');
+    assert.ok(win.some((x) => x.endsWith('BraveSoftware\\Brave-Browser\\Application\\brave.exe')) && !win.some((x) => /Google/.test(x)));
+    const mac = chromeCandidates(deps({ platform: 'darwin', env: { HOME: '/Users/u' }, browser: 'edge', spotlight: (id) => (id === 'com.microsoft.edgemac' ? ['/Volumes/X/Microsoft Edge.app'] : []) }));
+    assert.deepEqual(mac, ['/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge', '/Users/u/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge', '/Volumes/X/Microsoft Edge.app/Contents/MacOS/Microsoft Edge']);
+    // Chromium은 레지스트리 이름이 chrome.exe라 Google Chrome과 겹친다 → 레지스트리를 보지 않는다
+    assert.ok(!chromeCandidates(deps({ browser: 'chromium', regQuery: () => 'E:\\google\\chrome.exe' })).includes('E:\\google\\chrome.exe'));
+    // 설정의 chromePath는 Chrome에만 쓴다 (findBrowser가 다른 브라우저엔 넘기지 않음) / 없으면 그 브라우저 이름으로 알림
+    assert.throws(() => findChromeWith(deps({ browser: 'vivaldi' })), /Vivaldi not found/);
+    assert.throws(() => chromeCandidates(deps({ browser: 'firefox' })), /Only Chromium-based/);
+  });
+  it('브라우저마다 프로필을 따로, Chrome 업데이트 재시작은 Chrome 슬롯에만', async () => {
+    const { paths } = await import('../../src/paths.js');
+    assert.ok(paths.profile(3).endsWith(`profiles${path.sep}3`) && paths.profile(3, 'chrome') === paths.profile(3));
+    assert.ok(paths.profile(3, 'brave').endsWith(`profiles${path.sep}3-brave`));
+    const { staleVersion } = await import('../../src/service.js');
+    process.env.CDPM_TEST_INSTALLED_VERSION = '999.0.0.0';
+    try {
+      assert.equal(staleVersion('Chrome/150.0.1.2', 'brave'), undefined);
+      assert.equal(staleVersion('Edg/150.0.1.2', 'edge'), undefined);
+      assert.deepEqual(staleVersion('Chrome/150.0.1.2', undefined), { running: '150.0.1.2', installed: '999.0.0.0' });
+    } finally {
+      delete process.env.CDPM_TEST_INSTALLED_VERSION;
+    }
   });
 });
 
@@ -418,5 +445,93 @@ describe('슬롯 색 창과 동기화', () => {
     assert.equal(clearForeignTheme(dir), false);
     assert.equal(clearForeignTheme(path.join(dir, 'none')), false);
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('낡은 버전 알아채기', () => {
+  it('디스크의 버전을 읽고, 못 읽으면 undefined', async () => {
+    const { installedVersion, isOutdated, VERSION } = await import('../../src/version.js');
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cdpm-ver-'));
+    const file = path.join(dir, 'package.json');
+    fs.writeFileSync(file, JSON.stringify({ version: '9.9.9' }));
+    assert.equal(installedVersion(file), '9.9.9');
+    fs.writeFileSync(file, 'not json');
+    assert.equal(installedVersion(file), undefined);
+    assert.equal(installedVersion(path.join(dir, 'missing.json')), undefined);
+    // 지금 돌고 있는 코드와 디스크의 버전이 같으면 낡지 않았다 (아이콘을 평소처럼 맞춘다)
+    assert.equal(installedVersion(), VERSION);
+    assert.equal(isOutdated(), false);
+  });
+});
+
+describe('관제: 탭을 다른 슬롯으로 넘길 때의 판단', () => {
+  it('사이트(등록 도메인) 뽑기, 다시 열 수 있는 주소인지', async () => {
+    const { siteOf, canReopen } = await import('../../src/watch/site.js');
+    assert.equal(siteOf('mail.naver.com'), 'naver.com');
+    assert.equal(siteOf('www.hometax.go.kr'), 'hometax.go.kr');
+    assert.equal(siteOf('a.b.example.co.kr'), 'example.co.kr');
+    assert.equal(siteOf('127.0.0.1'), '127.0.0.1');
+    assert.equal(siteOf('localhost'), 'localhost');
+    assert.ok(canReopen('https://a.com/') && canReopen('about:blank') && canReopen('file:///a.html'));
+    assert.ok(!canReopen('chrome://settings') && !canReopen('chrome-extension://abc/x.html') && !canReopen('blob:https://a.com/1'));
+  });
+});
+
+
+describe('텔레메트리 신호', async () => {
+  const { TelemetryLog, challengeOf, vendorOfCookie, vendorOfUrl, telemetryReport } = await import('../../src/cdp/telemetry.js');
+  it('알려진 업체를 주소·쿠키로 알아보고, 흔한 주소는 잘못 잡지 않는다', () => {
+    assert.equal(vendorOfUrl('https://www.coupang.com/akam/13/7a1b2c3d')?.name, 'Akamai Bot Manager');
+    assert.equal(vendorOfUrl('https://challenges.cloudflare.com/turnstile/v0/api.js')?.kind, 'bot');
+    assert.equal(vendorOfUrl('https://www.clarity.ms/tag/abc')?.kind, 'replay');
+    assert.equal(vendorOfUrl('https://www.google-analytics.com/g/collect?v=2')?.kind, 'analytics');
+    assert.equal(vendorOfUrl('https://www.google.com/search?q=recaptcha'), undefined);
+    assert.equal(vendorOfUrl('https://notdatadome.com/'), undefined);
+    assert.equal(vendorOfUrl('chrome://version'), undefined);
+    assert.equal(vendorOfCookie('_abck')?.name, 'Akamai Bot Manager');
+    assert.equal(vendorOfCookie('_px3')?.name, 'PerimeterX / HUMAN');
+    assert.equal(vendorOfCookie('session_id'), undefined);
+  });
+  it('업체·종류로 막을 패턴을 만든다', async () => {
+    const { vendorsFor, blockPatterns, VENDORS } = await import('../../src/cdp/telemetry.js');
+    const { describeRules, wildcard: wc } = await import('../../src/cdp/network.js');
+    const hj = vendorsFor('hotjar');
+    assert.deepEqual(hj.map((v) => v.name), ['Hotjar']);
+    const pats = blockPatterns(hj[0]);
+    assert.ok(pats.some((p) => wc(p).test('https://script.hotjar.com/modules.js')));
+    assert.ok(!pats.some((p) => wc(p).test('https://example.com/?ref=hotjar.com')), '주소 뒤 글자에 걸리면 안 됨');
+    assert.ok(vendorsFor('replay').length >= 15 && vendorsFor('replay').every((v) => v.kind === 'replay'));
+    assert.ok(vendorsFor('captcha').every((v) => /captcha|turnstile/i.test(v.name)));
+    // 경로로만 알아보는 업체는 지정한 패턴만, 쿠키로만 알아보는 업체는 막을 수 없음
+    assert.deepEqual(blockPatterns(vendorsFor('Akamai Bot')[0]), ['*/akam/*']);
+    assert.deepEqual(blockPatterns(vendorsFor('F5 Shape')[0]), []);
+    // 모든 업체 이름이 겹치지 않거나(같은 업체 두 줄은 허용) 모든 패턴이 올바른 와일드카드
+    for (const v of VENDORS) for (const p of blockPatterns(v)) assert.ok(wc(p) instanceof RegExp);
+    assert.equal(describeRules([{ pattern: 'a', agent: 'x', label: 'Hotjar' }, { pattern: 'b', agent: 'x', label: 'Hotjar', mode: 'empty' }, { pattern: '*ads*', agent: 'y' }]), 'Hotjar [2 patterns] (x), *ads* (y)');
+  });
+  it('차단·확인 화면 응답', () => {
+    assert.match(challengeOf(403, { 'cf-mitigated': 'challenge', server: 'cloudflare' })!, /Cloudflare/);
+    assert.match(challengeOf(403, { 'X-DataDome': 'protected' })!, /DataDome/);
+    assert.equal(challengeOf(200, { server: 'cloudflare' }), undefined);
+    assert.equal(challengeOf(404, { server: 'cloudflare' }), undefined);
+  });
+  it('사이트·업체마다 한 번만 알리고, 분석 도구는 먼저 알리지 않는다', () => {
+    const log = new TelemetryLog();
+    log.onRequest({ url: 'https://www.googletagmanager.com/gtag/js', method: 'GET', at: 1 });
+    assert.equal(log.takeNotice('a.com'), undefined);
+    log.onRequest({ url: 'https://a.com/akam/13/abc', method: 'POST', postLen: 2000, at: 2 });
+    log.onCookies(['_abck', 'foo'], 3);
+    const n = log.takeNotice('a.com')!;
+    assert.match(n, /\[signal\].*Akamai Bot Manager \(bot detection; cookie _abck, 1 data send\)/);
+    assert.equal(log.takeNotice('a.com'), undefined);
+    assert.match(log.takeNotice('b.com')!, /Akamai/);
+    log.onDocumentResponse('https://a.com/x', 403, { 'cf-mitigated': 'challenge' }, 4);
+    assert.match(log.takeNotice('a.com')!, /blocked or challenged.*Cloudflare/);
+    log.onRequest({ url: 'https://a.com/api/log/v2', method: 'POST', at: 5 });
+    const r = telemetryReport(log, '10:00:00');
+    assert.match(r, /Bot detection[\s\S]*Akamai[\s\S]*Analytics[\s\S]*Google Analytics[\s\S]*Other data-collection[\s\S]*a\.com\/api\/log/);
   });
 });

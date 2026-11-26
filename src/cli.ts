@@ -27,12 +27,15 @@ const HELP = `cdpm ${VERSION} - CDP Manager
   cdpm install             Claude Code에 등록하고 자동 설정까지 (npm install -g cdpm-mcp 뒤 한 번)
   cdpm launch [슬롯...]     슬롯 Chrome 켜기 (예: cdpm launch 1 2 3, 번호 없으면 비어 있는 가장 작은 슬롯)
   cdpm launch --headless <슬롯...>   창 없이 실행
+  cdpm launch 2 --browser brave     다른 크로미움 계열 브라우저로 켜기 (brave · edge · chromium · vivaldi, 기본 Chrome)
   cdpm close <슬롯...>      슬롯 Chrome 정상 종료
   cdpm close --all         떠 있는 모든 슬롯 종료
   cdpm pause <슬롯...>      슬롯 멈추기: 에이전트의 조작을 바로 모두 막음 (--all: 떠 있는 모든 슬롯)
   cdpm resume <슬롯...>     다시 시작: 기다리던 에이전트를 바로 깨움 (--all: 멈춘 모든 슬롯)
   cdpm purge <슬롯>         꺼진 슬롯의 프로필(로그인 정보) 삭제
   cdpm status              슬롯 현황
+  cdpm browser              설치된 브라우저 보기 (기본 Chrome. 다른 건 cdpm launch N --browser brave 처럼 슬롯별로)
+  cdpm watch [슬롯...]      관제 화면: 슬롯의 탭 화면을 한 페이지에서 실시간으로 보고 관리 (--cols N: 한 줄 칸 수, --stop: 끄기)
   cdpm statusline          상태줄용 한 줄 출력
   cdpm statusline-setup    Claude Code 상태줄에 슬롯 표시 켜기 (원래 설정은 백업)
   cdpm setup               상태줄 + CLAUDE.md 병렬 처리 규칙 + 전용 서브에이전트(cdpm-browser) + 권한 허용 목록 넣기 (MCP 서버가 처음 켜질 때 자동으로도 함)
@@ -82,7 +85,11 @@ async function main(argv: string[]) {
       return; // 서버는 계속 돈다
     case 'launch': {
       const headless = rest.includes('--headless');
-      const slotArgs = rest.filter((a) => a !== '--headless');
+      const bi = rest.indexOf('--browser');
+      const browser = bi >= 0 ? rest[bi + 1] : undefined;
+      if (bi >= 0 && !browser) throw new CdpmError('브라우저 이름을 적어 주세요. 예: cdpm launch 2 --browser brave');
+      if (browser) (await import('./chrome/finder.js')).browserKey(browser);   // 크로미움 계열이 아니면 여기서 오류
+      const slotArgs = rest.filter((a, i) => a !== '--headless' && i !== bi && i !== bi + 1);
       const { launchSlot, firstFreeSlot } = await lazy.service();
       let slots = slotsFrom(slotArgs);
       if (!slots.length) {
@@ -92,8 +99,8 @@ async function main(argv: string[]) {
       }
       // 여러 개를 한 번에 켜면 작은 번호부터 (작업표시줄에도 그 순서로 놓인다)
       for (const slot of [...new Set(slots)].sort((a, b) => a - b)) {
-        const { launched } = await launchSlot(slot, CLI_AGENT, { headless });
-        console.log(`${slot}번 (포트 ${portOf(slot)}): ${launched ? `${headless ? '헤드리스로 ' : ''}실행했어요` : '이미 떠 있어요'}.`);
+        const { launched } = await launchSlot(slot, CLI_AGENT, { headless, browser });
+        console.log(`${slot}번 (포트 ${portOf(slot)}): ${launched ? `${browser && browser !== 'chrome' ? browser + '로 ' : ''}${headless ? '헤드리스로 ' : ''}실행했어요` : '이미 떠 있어요'}.`);
       }
       break;
     }
@@ -121,14 +128,32 @@ async function main(argv: string[]) {
       for (const l of lines) console.log(l);
       break;
     }
+    case 'watch':
+      await (await import('./watch/command.js')).watchCommand(rest);
+      // --serve면 서버가 계속 돈다
+      if (rest.includes('--serve')) return;
+      break;
     case 'purge': {
       const [slot] = slotsFrom(rest.slice(0, 1));
       if (slot === undefined) throw new CdpmError('슬롯을 적어 주세요. 예: cdpm purge 3');
       // 바빠서 늦게 답하는 Chrome도 떠 있는 것이다 (늦으면 8초까지 다시 묻고, 그래도 늦으면 지우지 않고 멈춘다)
       const { probeSure } = await lazy.service();
       if ((await probeSure(slot)).state === 'chrome') throw new CdpmError(`${slot}번 Chrome이 떠 있어요. 먼저 cdpm close ${slot}으로 종료하세요.`);
-      fs.rmSync(paths.profile(slot), { recursive: true, force: true });
+      for (const b of Object.keys((await import('./chrome/finder.js')).BROWSERS)) fs.rmSync(paths.profile(slot, b), { recursive: true, force: true });
       console.log(`${slot}번 프로필을 삭제했어요: ${paths.profile(slot)}`);
+      break;
+    }
+    case 'browser': {
+      // 설치된 크로미움 계열 브라우저 목록만 보여 준다. 기본은 늘 Chrome이고, 다른 브라우저는 켤 때 슬롯별로 고른다.
+      const { BROWSERS, chromeCandidates } = await import('./chrome/finder.js');
+      const { execFileSync } = await import('node:child_process');
+      const exists = (p: string) => { try { return fs.statSync(p).isFile(); } catch { return false; } };
+      const regQuery = (key: string) => { try { const out = execFileSync('reg', ['query', key, '/ve'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }); return /REG_(?:EXPAND_)?SZ\s+(.+)/.exec(out)?.[1].trim().replace(/^"|"$/g, ''); } catch { return undefined; } };
+      console.log('기본은 Chrome이에요. 다른 브라우저로 켜려면: cdpm launch 2 --browser brave');
+      for (const key of Object.keys(BROWSERS)) {
+        const at = chromeCandidates({ exists, regQuery, env: process.env, platform: process.platform, configPath: undefined, browser: key }).find(exists);
+        console.log(`  ${key.padEnd(9)} ${at ? '설치됨  ' + at : '없음'}`);
+      }
       break;
     }
     case 'status': {

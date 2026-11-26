@@ -119,7 +119,7 @@ async function launchSlotLocked(slot: number, agent: string, opts: LaunchOptions
   // macOS만: Dock 아이콘을 슬롯 아이콘으로 (첫 빈 탭이 있을 때 그림을 그려 저장해 둔다)
   if (DOCK_SUPPORTED && !opts.headless) await applyDock(slot, pid);
   await updateRegistry((r) => {
-    r.slots[String(slot)] = { ...newSlotRecord(agent, nowIso(), pid), ...(opts.headless ? { headless: true } : {}), ...(opts.proxy ? { proxy: describeProxy(opts.proxy) } : {}) };
+    r.slots[String(slot)] = { ...newSlotRecord(agent, nowIso(), pid), ...(opts.headless ? { headless: true } : {}), ...(opts.proxy ? { proxy: describeProxy(opts.proxy) } : {}), ...(opts.browser && opts.browser !== 'chrome' ? { browser: opts.browser } : {}) };
   });
   // 처음 열린 탭을 지금(이 프로세스 안에서) 기록해야 "연 사람"이 실행한 에이전트로 남는다.
   await syncTabs(slot).catch(() => undefined);
@@ -152,8 +152,13 @@ export async function firstFreeSlot(): Promise<number | undefined> {
 /** 실행 중 업데이트로 다시 켠 버전 쌍 (슬롯 → "옛>새"). 다시 켜도 버전이 안 맞으면 같은 쌍으로 또 켜지 않는다 (무한 반복 방지) */
 const updateRestarted = new Map<number, string>();
 
-/** 슬롯 Chrome(/json/version의 Browser)이 디스크에 설치된 Chrome과 버전이 다르면 두 버전. 알 수 없으면 undefined */
-export function staleVersion(browser: string | undefined): { running: string; installed: string } | undefined {
+/**
+ * 슬롯 Chrome(/json/version의 Browser)이 디스크에 설치된 Chrome과 버전이 다르면 두 버전. 알 수 없으면 undefined.
+ * Chrome이 아닌 브라우저(Brave 등)로 켠 슬롯은 비교하지 않는다: 버전 번호 체계가 달라 늘 다르게 나오고,
+ * Chrome 업데이트와도 상관이 없다 (비교하면 멀쩡한 Brave 슬롯을 계속 다시 켠다).
+ */
+export function staleVersion(browser: string | undefined, kind?: string): { running: string; installed: string } | undefined {
+  if (kind && kind !== 'chrome') return undefined;
   const running = runningVersion(browser);
   const installed = installedChromeVersion();
   return running && installed && running !== installed ? { running, installed } : undefined;
@@ -175,7 +180,7 @@ async function setNotice(slot: number, text: string) {
  * 않고 알리기만 한다. 다시 켰으면 true.
  */
 export async function restartIfUpdated(slot: number, browser?: string): Promise<boolean> {
-  const first = staleVersion(browser);
+  const first = staleVersion(browser, readRegistry().slots[String(slot)]?.browser);
   if (!first) return false;
   const pair = `${first.running}>${first.installed}`;
   if (updateRestarted.get(slot) === pair) return false;
@@ -183,7 +188,7 @@ export async function restartIfUpdated(slot: number, browser?: string): Promise<
   return withSlotLock(slot, async () => {
     // 잠금을 기다리는 동안 다른 세션이 이미 다시 켰을 수 있다
     const p = await probe(slot, 1500);
-    const stale = p.state === 'chrome' ? staleVersion(p.version.Browser) : undefined;
+    const stale = p.state === 'chrome' ? staleVersion(p.version.Browser, readRegistry().slots[String(slot)]?.browser) : undefined;
     if (!stale) return false;
     const rec = readRegistry().slots[String(slot)];
     // 사용자가 멈추고 직접 쓰는 슬롯은 다시 켜지 않는다 (입력하던 내용이 사라진다). 다시 시작한 뒤에 한다
@@ -204,7 +209,7 @@ export async function restartIfUpdated(slot: number, browser?: string): Promise<
     // 포트가 닫혀도 프로세스는 잠깐 더 살아 프로필을 붙잡는다. 끝날 때까지 기다려야 다시 켤 수 있다.
     for (let i = 0; rec?.pid && i < 50 && pidAlive(rec.pid); i++) await sleep(100);
     await forgetSlot(slot);
-    const launched = await launchChrome(slot, { headless: rec?.headless, url: urls[0] });
+    const launched = await launchChrome(slot, { headless: rec?.headless, url: urls[0], browser: rec?.browser });
     const pid = launched.pid ?? (await browserPid(slot));
     if (pid) confirmedPid.set(slot, pid);
     const text = `Slot ${slot} Chrome had been updated while running (${from}), so new tabs could not load. CDPM restarted it on the new version` +
@@ -213,6 +218,7 @@ export async function restartIfUpdated(slot: number, browser?: string): Promise<
       r.slots[String(slot)] = {
         ...newSlotRecord(rec?.launchedBy ?? EXTERNAL, nowIso(), pid),
         ...(rec?.headless ? { headless: true } : {}),
+        ...(rec?.browser ? { browser: rec.browser } : {}),
         notice: { text, at: nowIso() },
       };
     });
@@ -245,7 +251,7 @@ export async function checkUpdatedChrome(): Promise<number[]> {
     const slot = Number(s);
     const p = await probe(slot, 1500);
     if (p.state === 'slow') unsure = true; // 바쁜 슬롯은 다음 확인 때 다시
-    if (p.state !== 'chrome' || !staleVersion(p.version.Browser)) continue;
+    if (p.state !== 'chrome' || !staleVersion(p.version.Browser, readRegistry().slots[s]?.browser)) continue;
     if (readRegistry().slots[s]?.paused) unsure = true; // 멈춘 슬롯은 다시 시작한 뒤에 다시 본다
     if (await restartIfUpdated(slot, p.version.Browser).catch(() => false)) restarted.push(slot);
   }

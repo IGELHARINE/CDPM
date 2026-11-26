@@ -30,6 +30,9 @@ export interface TabRecord {
 export interface BlockStamp extends Stamp {
   pattern: string;
   pid: number;
+  /** 업체·종류 이름으로 막았으면 그 이름 (여러 패턴을 한 줄로 보여 준다) */
+  label?: string;
+  mode?: 'fail' | 'empty';
 }
 
 export interface SlotRecord {
@@ -39,6 +42,8 @@ export interface SlotRecord {
   headless?: boolean;
   /** 프록시로 켰으면 그 주소 (비밀번호는 가림) */
   proxy?: string;
+  /** Chrome이 아닌 브라우저로 켰으면 그 이름 (brave 등). 없으면 Chrome */
+  browser?: string;
   /** 사용자가 멈춘 슬롯 (누가·언제). 있으면 조작 도구가 모두 거절된다 */
   paused?: Stamp;
   summary?: SummaryStamp;

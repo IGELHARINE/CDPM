@@ -6,7 +6,7 @@ import { spawnOrphan } from '../orphan.js';
 import { paths, readConfig } from '../paths.js';
 import { colorOf, hexToRgb, portOf } from '../slots.js';
 import { pidAlive, sleep } from '../util.js';
-import { findChrome } from './finder.js';
+import { browserSpec, findBrowser } from './finder.js';
 import { proxyArgs, type ProxySpec } from './proxy.js';
 
 const READY_TIMEOUT_MS = 30_000;
@@ -18,13 +18,15 @@ export interface LaunchOptions {
   url?: string;
   /** 사용자가 프록시를 써 달라고 했을 때만. 없으면 프록시 관련 인자를 하나도 넣지 않는다. */
   proxy?: ProxySpec;
+  /** 사용자가 다른 브라우저로 켜 달라고 했을 때만 (brave·edge 등, 크로미움 계열). 없으면 Chrome. 프로필은 브라우저마다 따로 쓴다. */
+  browser?: string;
 }
 
 export function chromeArgs(slot: number, opts: LaunchOptions = {}): string[] {
   const config = readConfig();
   return [
     `--remote-debugging-port=${portOf(slot)}`,
-    `--user-data-dir=${paths.profile(slot)}`,
+    `--user-data-dir=${paths.profile(slot, opts.browser)}`,
     '--no-first-run',
     '--no-default-browser-check',
     `--window-name=${slot}번`,
@@ -74,15 +76,21 @@ export async function launchChrome(slot: number, opts: LaunchOptions = {}): Prom
   // 시작 주소는 Chrome 실행 인자 끝에 붙는다. '-'로 시작하면 주소가 아니라 Chrome 옵션으로 읽히고,
   // Windows Chrome은 '/'로 시작하는 것도 옵션으로 읽는다 ("/disable-web-security").
   if (opts.url && /^\s*[-/]/.test(opts.url)) throw new CdpmError(`Not a URL: ${opts.url.slice(0, 80)} (for a local file use file:///…)`);
-  const chrome = findChrome();
-  fs.mkdirSync(paths.profile(slot), { recursive: true });
-  if (!opts.headless && readConfig().slotTheme !== false) clearForeignTheme(paths.profile(slot));
+  const chrome = findBrowser(opts.browser);
+  const profile = paths.profile(slot, opts.browser);
+  const name = browserSpec(opts.browser).label;
+  fs.mkdirSync(profile, { recursive: true });
+  if (!opts.headless && readConfig().slotTheme !== false) clearForeignTheme(profile);
   const extra = opts.proxy ? await proxyArgs(slot, opts.proxy) : [];
+  return startAndWait(slot, chrome, [...chromeArgs(slot, opts), ...extra, opts.url || 'about:blank'], name, profile);
+}
+
+async function startAndWait(slot: number, chrome: string, args: string[], name: string, profile: string): Promise<Launched> {
   let pid: number;
   try {
-    ({ pid } = await spawnOrphan(chrome, [...chromeArgs(slot, opts), ...extra, opts.url || 'about:blank'], { hide: false }));
+    ({ pid } = await spawnOrphan(chrome, args, { hide: false }));
   } catch (e) {
-    throw new CdpmError(`Failed to launch Chrome: ${(e as Error).message}`);
+    throw new CdpmError(`Failed to launch ${name}: ${(e as Error).message}`);
   }
 
   const deadline = Date.now() + READY_TIMEOUT_MS;
@@ -91,8 +99,8 @@ export async function launchChrome(slot: number, opts: LaunchOptions = {}): Prom
     if (p.state === 'chrome') return { pid, version: p.version };
     if (!pidAlive(pid)) {
       throw new CdpmError(
-        `Slot ${slot} Chrome exited right after launch. ` +
-        `If a Chrome using the same profile (${paths.profile(slot)}) is already running without a debugging port, the new one hands its window over and exits. Close that window and launch again.`,
+        `Slot ${slot} ${name} exited right after launch. ` +
+        `If a ${name} using the same profile (${profile}) is already running without a debugging port, the new one hands its window over and exits. Close that window and launch again.`,
       );
     }
     await sleep(100);
@@ -104,7 +112,7 @@ export async function launchChrome(slot: number, opts: LaunchOptions = {}): Prom
     // 이미 꺼졌음
   }
   throw new CdpmError(
-    `Slot ${slot} Chrome started, but CDP port ${portOf(slot)} did not open within ${READY_TIMEOUT_MS / 1000}s, so it was closed again. ` +
-    `A Chrome using the same profile (${paths.profile(slot)}) may already be running without a debugging port. Close it and try again.`,
+    `Slot ${slot} ${name} started, but CDP port ${portOf(slot)} did not open within ${READY_TIMEOUT_MS / 1000}s, so it was closed again. ` +
+    `A ${name} using the same profile (${profile}) may already be running without a debugging port. Close it and try again.`,
   );
 }

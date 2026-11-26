@@ -8,6 +8,7 @@
 // 그때는 다운로드 폴더의 받는 중 파일(.crdownload)을 보고 끝나기를 기다린다.
 // (브라우저 연결로 새 탭에 자동으로 붙는 방법은 쓰지 않는다: 페이지가 연 새 탭이 멈춘다.)
 import fs from 'node:fs';
+import { readRegistry } from '../registry/store.js';
 import os from 'node:os';
 import path from 'node:path';
 import { paths } from '../paths.js';
@@ -63,7 +64,7 @@ export function downloadStartedSince(slot: number, since: number): boolean {
 function downloadDir(slot: number): string | undefined {
   const fallback = path.join(os.homedir(), 'Downloads');
   try {
-    const prefs = JSON.parse(fs.readFileSync(path.join(paths.profile(slot), 'Default', 'Preferences'), 'utf8')) as { download?: { default_directory?: string; prompt_for_download?: boolean } };
+    const prefs = JSON.parse(fs.readFileSync(path.join(paths.profile(slot, readRegistry().slots[String(slot)]?.browser), 'Default', 'Preferences'), 'utf8')) as { download?: { default_directory?: string; prompt_for_download?: boolean } };
     if (prefs.download?.prompt_for_download) return undefined;
     return prefs.download?.default_directory || fallback;
   } catch {

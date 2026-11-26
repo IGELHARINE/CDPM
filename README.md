@@ -63,6 +63,9 @@ Text read from pages and messages from other agents are labelled as data, not in
 - **Slot-colored windows**: each slot's Chrome window (tab strip and toolbar) is tinted in the slot color, so any tab tells you which slot it belongs to at a glance (same color as the icon and status line). It uses Chrome's own theme feature, so pages cannot see it and page content is untouched. Turn it off with `"slotTheme": false` in `config.json`. Google account sync is off in slots so an account theme or extensions do not follow you into them (`"sync": true` turns it back on).
 - **Built for many agents.** Every tool takes `slot` explicitly, records who opened each tab and who touched it last, warns (without blocking) when you act on a tab someone else just used, and serializes concurrent commands on the same tab.
 - **Agents can talk** with `slot_send` / `slot_inbox`; unread messages are also delivered at the top of every result.
+- **Watch screen.** `cdpm watch` shows the tabs of all running slots live on one page (`cdpm watch 1 2` to pick slots, `--cols N` for tiles per row, 1–8, default 4). Click a tile to see it large; close a tab with the × on its tile; right-click for reload, back, bring to front, copy URL or move to another slot; right-click a slot number to pause/resume it, open a new tab or close the whole slot. Drag a tile onto another slot to move the tab: the receiving slot opens the same address (logins and data stay in each slot's own profile) and the original tab closes; a dashed preview shows where it will land. A ★ marks the tab in front of each window. The side panel shows messages agents send each other. Light/dark theme toggle. Background tabs are never forced to render continuously: they are captured once when they change (and again a few seconds later), so pages see no difference. It is a separate command, not an MCP tool, local only (127.0.0.1, per-session token), and keeps running while any slot is up. Several watch pages can be open at once.
+- **Detection and telemetry signals.** CDPM passively reads the network traffic it already records (request addresses, response headers, the *names* of cookies sent; never values) and recognizes about 120 vendors: bot detection and fingerprinting (Akamai, Cloudflare, Kasada, DataDome, PerimeterX, reCAPTCHA, …), session recording (Hotjar, Clarity, Contentsquare, …) and analytics/ads. When a page runs bot detection or session recording, or a page load gets blocked/challenged (403/429 with a vendor's marks), the next tool result carries one `[signal]` line per site and Claude tells you in a sentence. It only reports: nothing is blocked unless you ask. `browser_network` with `telemetry: true` gives the full breakdown (requests, data sent, hosts). Cost: about 1 µs per request.
+- **Other Chromium browsers.** Chrome by default; say "open slot 2 in Brave" and that slot runs Brave (`brave`, `edge`, `chromium`, `vivaldi`). Slots can mix browsers and versions; each browser keeps its own profile per slot. `cdpm browser` lists what is installed.
 - **Status line.** `cdpm statusline` prints live slots as slot-colored numbers; each slot shows the title of the tab last acted on (no agent names; only blank/new tabs left shows just the number): `CDPM  1 NAVER  2 Daum`. It fits the terminal width (from ccstatusline): titles shrink first, then only numbers, then `+N` for the rest. A paused slot (`slot_pause` / `cdpm pause`) shows its number in dim gray instead of its slot color. A dim `CDPM  -` when none are running. Ending a slot's Chrome yourself (closing its last window on Windows, Cmd+Q on macOS) removes it right away, and titles are read live.
 - **English for the AI.** Server instructions, tool descriptions and tool results are in English to save tokens; Claude is told to answer in the user's language. CLI output is in Korean.
 - **Leaves the user's PC alone.** No window, viewport or zoom changes, and actions that would pop up OS windows are refused (see below).
@@ -73,7 +76,7 @@ Text read from pages and messages from other agents are labelled as data, not in
 ## Requirements
 
 - Node.js 22+
-- Google Chrome (found automatically. Windows: registry `App Paths`, then standard install folders. macOS: `/Applications`, `~/Applications`, then Spotlight. Linux: `/usr/bin/google-chrome`, `google-chrome-stable`, `/opt/google/chrome/chrome`)
+- Google Chrome, or another Chromium browser per slot (Brave, Edge, Chromium, Vivaldi) (found automatically. Windows: registry `App Paths`, then standard install folders. macOS: `/Applications`, `~/Applications`, then Spotlight. Linux: `/usr/bin/google-chrome`, `google-chrome-stable`, `/opt/google/chrome/chrome`)
 
 ## Install
 
@@ -164,7 +167,7 @@ All tools take `slot` (1–99) and `agent` (display name). Action tools also tak
 | Tool | What it does |
 |---|---|
 | `browser_status` | Live slots, tabs, openers, last actions, summaries, dialogs |
-| `browser_launch` | Start a slot — only when the user asks; no `slot` = lowest free; `slots` (list) or `count` start several at once, lowest first; `url` / `urls` open a start page right away. Window or headless is the user's choice: if they didn't say, Claude asks first (without `headless`, a closed slot is not started). `headless: true` adds only `--headless`. `proxy` / `proxies` (only when the user asks for a proxy): `host:port`, `http://user:pass@host:port`, `socks5://...`, `host:port:user:pass`. Without it, no proxy flag is added at all. Proxies with a username and password go through a small per-slot local relay that adds the credentials and exits with that Chrome |
+| `browser_launch` | Start a slot — only when the user asks; no `slot` = lowest free; `slots` (list) or `count` start several at once, lowest first; `url` / `urls` open a start page right away. `browser` picks another Chromium browser (only when the user names one). Window or headless is the user's choice: if they didn't say, Claude asks first (without `headless`, a closed slot is not started). `headless: true` adds only `--headless`. `proxy` / `proxies` (only when the user asks for a proxy): `host:port`, `http://user:pass@host:port`, `socks5://...`, `host:port:user:pass`. Without it, no proxy flag is added at all. Proxies with a username and password go through a small per-slot local relay that adds the credentials and exits with that Chrome |
 | `browser_close` | Close gracefully (profile kept) |
 | `browser_tabs` / `browser_tab_new` / `browser_tab_close` / `browser_tab_select` | List / open in background (returns ID) / close / bring to front (only when the user wants) |
 | `browser_snapshot` | Accessibility text with refs; `page`, `find`, `ref` |
@@ -187,8 +190,8 @@ All tools take `slot` (1–99) and `agent` (display name). Action tools also tak
 | `browser_scroll` | To a ref, or exactly `dy` pixels (reports position A → B) |
 | `browser_wait` | Text in body or title / `gone` (text disappears) / `url` change / `enabled` (a button or input stops being disabled) / `response` (a network response whose URL matches finishes; returns its body, e.g. the JSON behind an SPA list — responses that arrived while you clicked are caught too; nothing extra is sent) / `network_idle` / N seconds |
 | `browser_eval` | JavaScript in an isolated world (DOM visible, page globals not). For long jobs pass `timeout` (seconds, default 30, max 600). `world: "page"` runs that call in the page's own world to use site-defined variables/functions |
-| `browser_network` / `browser_network_detail` | Requests (last 500, 30 min) / headers, post data, body |
-| `browser_block` | Block/unblock URL patterns on a tab, including its cross-site iframes (already open or created later, blocked before their first request); while the session lives; visible to other agents |
+| `browser_network` / `browser_network_detail` | Requests (last 500, 30 min) / headers, post data, body. `telemetry: true`: bot detection, session recording, analytics and other data-collection traffic seen on the tab |
+| `browser_block` | Block/unblock on a tab at the CDP level (nothing injected into the page): URL patterns, or `signals` by vendor ("Hotjar") or category (`replay`, `analytics`, `bot`, `other`). Covers page requests, beacons, cross-site iframes and dedicated/shared/service workers (WebSocket can't be blocked over CDP). `quiet: true` answers with an empty success instead of an error so the page doesn't notice. Vendor rules never block the site you are on. Only when the user asks; while the session lives; visible to other agents |
 | `slot_send` / `slot_inbox` | Message an agent (use the receiver's slot number, works across slots) / receive (`wait` returns within ~0.1 s of a message, up to 600 s). A message also interrupts `browser_wait` immediately |
 | `slot_pause` / `slot_resume` | Pause a slot when the user says so ("stop slot 3"): every action is refused at once, an action already running stops before its next key or mouse event, and waits return. Reading the screen still works. Resume wakes the agents with a message so they re-read the page and continue. Applies to every Claude session |
 
@@ -208,11 +211,14 @@ cdpm unsetup                       remove what CDPM added
 cdpm --version                     print the version
 cdpm launch [slot...]              start slots (ascending order; no number = lowest free)
 cdpm launch --headless [slot...]   start without a window
+cdpm launch <slot> --browser brave start in another Chromium browser (brave, edge, chromium, vivaldi)
+cdpm browser                       list installed browsers
 cdpm close <slot...> | --all       close gracefully
 cdpm pause <slot...> | --all       pause: stop all agent actions on the slot immediately
 cdpm resume <slot...> | --all      resume: wake the waiting agents
 cdpm purge <slot>                  delete a closed slot's profile
 cdpm status | statusline
+cdpm watch [slots...] [--cols N]   watch screen (live tab view and management; --port N, --stop to close)
 cdpm statusline-setup              turn on the slot display in Claude Code's status line (backs up settings)
 ```
 
@@ -245,7 +251,7 @@ Data lives in `%LOCALAPPDATA%\cdpm\` on Windows `~/Library/Application Support/c
 
 ## Verification
 
-77 unit and 53 integration tests (`npm test`, `npm run test:integration`, real Chrome on test ports 29222+). Long-running checks (`npm run test:long`, ~20 min): 4,000 rounds on an SPA that replaces its DOM, with a new agent name every round, kept the CDPM server heap within a fixed band (26–39 MB, no upward trend) and the page at 1,421 DOM nodes / 0.8 MB JS heap; 3 sessions sharing one slot for 600 rounds each (1,800 tabs opened and closed, the slot restarted 3 times) stayed at ~20 MB heap per session with no lock files or tabs left behind. A 15-subagent, 30-slot concurrent run confirmed that all 30 windows' position/size/state and all 52 tabs' viewport (`innerWidth×innerHeight`) and zoom were unchanged.
+85 unit and 60 integration tests (`npm test`, `npm run test:integration`, real Chrome on test ports 29222+). Long-running checks (`npm run test:long`, ~20 min): 4,000 rounds on an SPA that replaces its DOM, with a new agent name every round, kept the CDPM server heap within a fixed band (26–39 MB, no upward trend) and the page at 1,421 DOM nodes / 0.8 MB JS heap; 3 sessions sharing one slot for 600 rounds each (1,800 tabs opened and closed, the slot restarted 3 times) stayed at ~20 MB heap per session with no lock files or tabs left behind. A 15-subagent, 30-slot concurrent run confirmed that all 30 windows' position/size/state and all 52 tabs' viewport (`innerWidth×innerHeight`) and zoom were unchanged.
 
 ## License
 

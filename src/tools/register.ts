@@ -3,13 +3,16 @@ import { randomBytes } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { wildcard, type BlockRule, type NetEntry } from '../cdp/network.js';
+import { describeRules, wildcard, type BlockRule, type NetEntry } from '../cdp/network.js';
+import { blockPatterns, telemetryReport, vendorsFor } from '../cdp/telemetry.js';
+import { siteOf } from '../watch/site.js';
 import { browserConnection, forgetSlotVisibility, knownDialog, onAgentForgotten, pageSession, touchAgent, type DialogInfo, type PageSession } from '../cdp/sessions.js';
 import { waitDownload } from '../cdp/downloads.js';
 import { listPrintPreviews, probe } from '../cdp/targets.js';
 import { bubbleDetail, bubbleLine, hostsOf, permissionBubbles, pressBubble } from '../chrome/bubbles.js';
 import { describeProxy, parseProxy, type ProxySpec } from '../chrome/proxy.js';
 import { isClaudeCode } from '../client-info.js';
+import { browserSpec } from '../chrome/finder.js';
 import { CdpmError } from '../errors.js';
 import { withSlotLock } from '../registry/lock.js';
 import { pausedInfo, pausedRefusal, pauseSlots, resumeSlots } from '../pause.js';
@@ -22,6 +25,7 @@ import {
   type TabKind, type TabView,
 } from '../service.js';
 import { MAX_SLOT, MIN_SLOT, PORT_BASE, portOf } from '../slots.js';
+import { installedVersion, isOutdated, VERSION } from '../version.js';
 import { ago, decodeUrl, nowIso, pidAlive, secondsSince, shortUrl, sleep, truncate } from '../util.js';
 import { MESSAGE_NOTE, formatHeader, formatMessages, formatSlotStatus } from './format.js';
 import { fencePage, readAfter, type ReadMode } from './read.js';
@@ -107,6 +111,10 @@ function dialogsOf(slot: number, tabs: TabView[]): Map<string, DialogInfo> {
 }
 
 /** 에이전트마다 마지막으로 보여준 탭 목록 (슬롯:에이전트 → 목록 요약). 바뀐 게 없으면 머리말을 한 줄로 줄인다. */
+/** 낡은 버전으로 돌고 있다는 안내를 이미 본 에이전트 */
+const outdatedTold = new Set<string>();
+/** 관제 화면(cdpm watch)을 이 서버 세션에서 이미 알려 줬는지 (여러 슬롯을 켤 때 한 번만 알린다) */
+let watchTipShown = false;
 const lastTabList = new Map<string, { per: Map<string, string>; blockSig: string }>();
 
 // 오래 안 나타난 에이전트(끝난 서브에이전트 등)의 기록을 지운다 (오래 켜 두어도 이름별 기록이 늘지 않게)
@@ -136,10 +144,16 @@ async function header(slot: number, agent: string, tabs: TabView[], opts: { exec
   const blockLines: string[] = [];
   for (const t of tabs) {
     const blocks = liveBlocks(t);
-    if (blocks.length) blockLines.push(`[${t.id}] blocking requests: ${blocks.map((b) => `${b.pattern} (${b.agent})`).join(', ')}`);
+    if (blocks.length) blockLines.push(`[${t.id}] blocking requests: ${describeRules(blocks)}`);
   }
   // Chrome 권한 요청 말풍선 (페이지 밖 브라우저 화면이라 스냅샷에 안 보인다)
   for (const b of permissionBubbles(slot, hostsOf(tabs.map((t) => t.url)))) warnings.push(bubbleLine(b, await bubbleDetail(b)));
+  // CDPM이 업데이트됐는데 이 세션은 옛 코드로 돌고 있으면 한 번 알린다 (에이전트마다 한 번)
+  if (isOutdated() && !outdatedTold.has(agent)) {
+    if (outdatedTold.size > 500) outdatedTold.clear();
+    outdatedTold.add(agent);
+    warnings.push(`CDPM was updated to ${installedVersion()} but this session still runs ${VERSION}. Browser control works as before; slot icons are left to sessions on the new version. Tell the user to reconnect CDPM in this session (/mcp → reconnect) to load the update.`);
+  }
   // 인쇄 미리보기 (탭 목록에는 안 넣는다). 어느 탭 것인지는 제목으로 맞춘다
   for (const p of await listPrintPreviews(slot).catch(() => [])) {
     const owners = tabs.filter((t) => t.title === p.title);
@@ -260,6 +274,12 @@ async function onTab(args: TabCall, kind: TabKind, action: string | null, fn: (s
     if (opened.length) {
       out.text += `\nNew tab opened: ${opened.map((t) => `tab ${t.no} [${t.id}] ${t.url === 'about:blank' || !t.url ? '(loading)' : truncate(t.title || shortUrl(t.url), 40)}`).join(', ')}`;
     }
+    // 봇 탐지·차단·세션 녹화 신호: 이 사이트에서 처음 보인 것만 한 줄로 (사용자에게 알리라고)
+    const now = tabs.find((t) => t.targetId === tab.targetId) ?? tab;
+    let host = '';
+    try { host = new URL(now.url).hostname; } catch { /* about:blank 등 */ }
+    const signal = host ? session.network.telemetry.takeNotice(siteOf(host)) : undefined;
+    if (signal) out.text += `\n${signal}`;
     if (action && !session.dialog) {
       // 클릭 등으로 페이지가 전체 화면이 되면 사용자 창 상태가 바뀌므로 바로 해제한다.
       const fs = await session.evaluate<boolean>('(() => { if (!document.fullscreenElement) return false; document.exitFullscreen(); return true; })()', { timeoutMs: 1500 }).catch(() => undefined);
@@ -296,10 +316,12 @@ function fmtSize(n?: number) {
 }
 
 function netLine(e: NetEntry, rules: BlockRule[] = []): string {
-  const blockedBy = e.blockedBy ?? (e.failed && /BLOCKED_BY_CLIENT/.test(e.failed) ? rules.find((r) => wildcard(r.pattern).test(e.url))?.pattern : undefined);
+  // CDPM이 막은 요청은 막을 때 표시해 둔다. 표시가 없는데 BLOCKED_BY_CLIENT면 브라우저 자체(Brave 실드 등)나 확장 프로그램이 막은 것이다.
+  const ours = e.failed && /BLOCKED_BY_CLIENT/.test(e.failed) ? rules.find((r) => r.mode !== 'empty' && wildcard(r.pattern).test(e.url)) : undefined;
+  const blockedBy = e.blockedBy ?? (ours ? ours.label ?? ours.pattern : e.failed && /BLOCKED_BY_CLIENT/.test(e.failed) ? 'by the browser itself (e.g. Brave Shields) or an extension, not CDPM' : undefined);
   const status = e.failed
     ? `failed ${e.failed}${blockedBy ? ` (blocked: ${blockedBy})` : ''}`
-    : e.status !== undefined ? String(e.status) + (e.fromCache ? ' (cache)' : '') : '…';
+    : e.status !== undefined ? String(e.status) + (e.fromCache ? ' (cache)' : '') + (e.blockedBy ? ` (not sent: ${e.blockedBy})` : '') : '…';
   const parts = [`n${e.no}`, e.method, status, e.type, fmtSize(e.size), e.durationMs !== undefined ? `${e.durationMs}ms` : ''].filter(Boolean);
   return `${parts.join('  ')}  ${truncate(decodeUrl(e.url), 140)}`;
 }
@@ -367,10 +389,11 @@ export function registerTools(server: McpServer) {
       urls: z.array(z.string()).optional().describe('Per-slot start URLs, paired in slots order (count: launch order). "" = blank tab. E.g. slots [1,2], urls ["https://www.wehago.com", "https://test.igel.kr"] → 1 opens wehago, 2 opens test.igel.kr'),
       agent: agentArg,
       headless: z.boolean().optional().describe('false = windowed (visible), true = headless (hidden). true only if the user says "headless/hidden/no window", false for "visible/headful". If unstated, omit and ask first (no guessing). Applies only on first launch'),
+      browser: z.enum(['chrome', 'brave', 'edge', 'chromium', 'vivaldi']).optional().describe('Default Chrome: omit it. Only when the user asks to open the slot in another Chromium-based browser (e.g. "브레이브로", "in Edge"). Applies to every slot in this call; for different browsers per slot, call once per browser. Each browser keeps its own profile per slot, so logins are separate.'),
       proxy: z.string().optional().describe('Only when the user asks for a proxy (never otherwise). As given: "1.2.3.4:8080", "http://user:pass@host:port", "socks5://host:port", "host:port:user:pass", etc. Applies to all launched slots, first launch only'),
       proxies: z.array(z.string()).optional().describe('Per-slot proxies, paired in slots order (count: launch order)'),
     },
-  }, async ({ slot: wanted, slots: wantedList, count, agent, headless, url, urls, proxy, proxies }) => guard(async () => {
+  }, async ({ slot: wanted, slots: wantedList, count, agent, headless, url, urls, proxy, proxies, browser }) => guard(async () => {
     const me = agent ?? DEFAULT_AGENT;
     const picked = !wantedList?.length && wanted === undefined;
     let targets: number[];
@@ -416,13 +439,13 @@ export function registerTools(server: McpServer) {
       let slot = asked;
       let launched: boolean;
       try {
-        ({ launched } = await launchSlot(slot, me, { headless, url: startUrl.get(asked), proxy: proxyOf.get(asked) }));
+        ({ launched } = await launchSlot(slot, me, { headless, url: startUrl.get(asked), proxy: proxyOf.get(asked), browser }));
         // 번호 없이 "하나 켜 줘"였는데 그 사이 다른 세션이 같은 빈 슬롯을 먼저 켰으면, 남의 슬롯에 붙지 않고 다음 빈 슬롯을 켠다
         for (let tries = 0; picked && headless !== undefined && !launched && tries < 3; tries++) {
           const next = (await freeSlots(targets.length + 1)).find((n) => !targets.includes(n));
           if (next === undefined) break;
           slot = next;
-          ({ launched } = await launchSlot(slot, me, { headless, url: startUrl.get(asked), proxy: proxyOf.get(asked) }));
+          ({ launched } = await launchSlot(slot, me, { headless, url: startUrl.get(asked), proxy: proxyOf.get(asked), browser }));
         }
       } catch (e) {
         // 하나가 실패해도 이미 켠 슬롯은 알려야 한다 (오류만 돌려주면 켜진 슬롯이 보고에서 빠진다)
@@ -435,9 +458,13 @@ export function registerTools(server: McpServer) {
       if (launched) await recordAction(slot, '', me, 'launch', undefined, !agent);
       const running = readRegistry().slots[String(slot)];
       const mode = running?.headless ? 'headless' : 'windowed';
+      const name = running?.browser ? browserSpec(running.browser).label : 'Chrome';
       const via = running?.proxy ? `, proxy ${running.proxy}` : '';
-      let line = launched ? `Started slot ${slot} Chrome ${mode} (port ${portOf(slot)}${via})${startUrl.get(slot) ? ` → opening ${truncate(startUrl.get(slot)!, 60)}` : ''}.` : `Slot ${slot} Chrome already running; attached.`;
+      let line = launched ? `Started slot ${slot} ${name} ${mode} (port ${portOf(slot)}${via})${startUrl.get(slot) ? ` → opening ${truncate(startUrl.get(slot)!, 60)}` : ''}.` : `Slot ${slot} ${name} already running; attached.`;
       if (!launched && startUrl.get(slot)) line += ` [note] The start URL was not opened (the slot was already running); navigate or open a tab yourself.`;
+      if (!launched && browser && (browser === 'chrome' ? !!running?.browser : running?.browser !== browser)) {
+        line += ` [warning] Already running in ${running?.browser ?? 'chrome'}, attached as is. To open it in ${browser}, browser_close then launch again with browser.`;
+      }
       if (!launched && headless !== undefined && headless !== !!running?.headless) {
         line += ` [warning] Already running ${mode}, attached as is. To change, browser_close then launch again.`;
       }
@@ -448,6 +475,10 @@ export function registerTools(server: McpServer) {
       lines.push(line);
     }
     let msg = lines.join('\n');
+    if (anyLaunched && targets.length > 1 && !watchTipShown) {
+      watchTipShown = true;
+      msg += '\n[Tip, once] The user can watch these slots live on one page with `cdpm watch` (they can also move, reload or close tabs there). Mention it in one short line; don\'t open it unless they ask.';
+    }
     if (anyLaunched && picked) {
       msg += targets.length === 1 ? '\nNo number given; picked the lowest free slot.' : '\nNo numbers given; picked free slots, lowest first.';
     }
@@ -915,15 +946,17 @@ export function registerTools(server: McpServer) {
   // ---------- 네트워크 ----------
   server.registerTool('browser_network', {
     title: 'Network requests',
-    description: 'Tab network request list (newest at bottom). Records the latest 500 since CDPM first attached to the tab. Filter with filter (URL part), type (Document, XHR, Fetch, Script, Image, etc.), failed (failures only). For details pass the n-number to browser_network_detail.',
+    description: 'Tab network request list (newest at bottom), or with telemetry: true an analysis of detection/telemetry traffic. Records the latest 500 since CDPM first attached to the tab. Filter with filter (URL part), type (Document, XHR, Fetch, Script, Image, etc.), failed (failures only). For details pass the n-number to browser_network_detail.',
     inputSchema: {
       slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg,
       filter: z.string().optional().describe('Only requests whose URL contains this'),
       type: z.string().optional().describe('Request type (e.g. XHR, Fetch, Document, Script, Image)'),
       failed: z.boolean().optional().describe('Failed requests only'),
       limit: z.number().int().min(1).max(200).optional().describe('Max count (default 40, newest first)'),
+      telemetry: z.boolean().optional().describe('Instead of the list: analysis of bot detection, blocks/challenges, session recording, analytics and other data-collection traffic seen on this tab'),
     },
   }, async (args) => onTab(args, 'view', null, async (s) => {
+    if (args.telemetry) return { text: telemetryReport(s.network.telemetry, new Date(s.network.startedAt).toLocaleTimeString('en-GB', { hour12: false })) };
     let list = s.network.list();
     const total = list.length;
     if (args.filter) list = list.filter((e) => e.url.toLowerCase().includes(args.filter!.toLowerCase()) || decodeUrl(e.url).toLowerCase().includes(args.filter!.toLowerCase()));
@@ -955,45 +988,72 @@ export function registerTools(server: McpServer) {
 
   server.registerTool('browser_block', {
     title: 'Block requests',
-    description: 'Blocks tab network requests matching URL patterns (they fail). add adds, remove removes, clear removes all rules you set. ' +
+    description: 'Blocks tab network requests at the CDP level (nothing is injected into the page). add adds URL patterns, signals blocks known trackers by vendor or category, remove removes (pattern or vendor/category name), clear removes all rules you set. ' +
       'Patterns: * any chars, ? one char. A bare domain matches every request containing it ("ads.example.com" → "*ads.example.com*"). A trailing * is added automatically so query strings still match ("*.png" → "*.png*"). The tab skips the cache while rules exist. ' +
+      'Covers page requests, beacons, iframes from other sites, dedicated/shared/service workers. WebSocket connections cannot be blocked over CDP. ' +
+      'quiet: true answers matching requests with an empty success (204/empty body, 1x1 image) instead of failing them, so the page doesn\'t see a network error. ' +
+      'Use signals only when the user asks to block trackers/telemetry; never on your own (by default you only report [signal] lines). Bot-detection/captcha blocking in particular often makes sites refuse or keep challenging the browser. ' +
       'Rules last only while this Claude session is alive and are shown to other agents in the header. With no args, shows current rules.',
     inputSchema: {
       slot: slotArg, agent: agentArg, tab: tabArg, multiSlot: multiSlotArg,
       add: z.array(z.string()).optional().describe('URL patterns to block'),
-      remove: z.array(z.string()).optional().describe('Patterns to unblock'),
+      signals: z.array(z.string()).optional().describe('Known trackers to block by vendor name ("Hotjar", "Google Analytics") or category: "replay" (session recording), "analytics" (analytics/ads/error reporting), "bot" (bot detection/fingerprinting/captcha), "other" (unnamed data-collection endpoints seen on this tab). See browser_network telemetry: true for what the tab uses'),
+      quiet: z.boolean().optional().describe('With add/signals: answer matching requests with an empty success instead of failing them'),
+      remove: z.array(z.string()).optional().describe('Patterns or vendor/category names to unblock'),
       clear: z.boolean().optional().describe('Remove all rules set by this session'),
       summary: summaryArg,
     },
-  }, async (args) => onTab(args, args.add?.length || args.remove?.length || args.clear ? 'action' : 'view', args.add?.length ? 'block requests' : args.remove?.length || args.clear ? 'unblock requests' : null, async (s, tab, agent) => {
+  }, async (args) => onTab(args, args.add?.length || args.signals?.length || args.remove?.length || args.clear ? 'action' : 'view', args.add?.length || args.signals?.length ? 'block requests' : args.remove?.length || args.clear ? 'unblock requests' : null, async (s, tab, agent) => {
     let rules: BlockRule[] = [...s.network.rules];
+    const notes: string[] = [];
     if (args.clear) rules = [];
     for (const p of args.remove ?? []) {
       const n = normalizePattern(p);
-      rules = rules.filter((r) => r.pattern !== n && r.pattern !== p.trim());
+      const q = p.trim().toLowerCase();
+      const labels = new Set([q, ...vendorsFor(p).map((v) => v.name.toLowerCase())]);
+      rules = rules.filter((r) => r.pattern !== n && r.pattern !== p.trim() && !(r.label && labels.has(r.label.toLowerCase())));
     }
-    for (const p of args.add ?? []) {
-      const n = normalizePattern(p);
-      if (!rules.some((r) => r.pattern === n)) rules.push({ pattern: n, agent, at: nowIso() });
+    const mode = args.quiet ? 'empty' as const : undefined;
+    const push = (pattern: string, label?: string, thirdParty?: boolean) => {
+      const old = rules.find((r) => r.pattern === pattern);
+      if (old) { if (mode) old.mode = mode; return; }
+      rules.push({ pattern, agent, at: nowIso(), ...(mode ? { mode } : {}), ...(label ? { label } : {}), ...(thirdParty ? { thirdParty } : {}) });
+    };
+    for (const p of args.add ?? []) push(normalizePattern(p));
+    for (const q of args.signals ?? []) {
+      if (q.trim().toLowerCase() === 'other') {
+        const seen = s.network.telemetry.list().filter((x) => x.kind === 'other' && x.pattern);
+        for (const x of seen) push(x.pattern!, x.vendor);
+        notes.push(seen.length ? `other: ${seen.length} unnamed endpoint(s) seen on this tab` : 'other: none seen on this tab yet');
+        continue;
+      }
+      const vs = vendorsFor(q);
+      if (!vs.length) { notes.push(`"${q}": no known vendor or category by that name`); continue; }
+      for (const v of vs) {
+        const pats = blockPatterns(v);
+        if (!pats.length) { notes.push(`${v.name}: recognized by cookies or by a first-party path only, so it can't be blocked by address`); continue; }
+        for (const pt of pats) push(pt, v.name, !v.block);
+      }
     }
-    const changed = args.clear || args.add?.length || args.remove?.length;
+    const changed = args.clear || args.add?.length || args.signals?.length || args.remove?.length;
     if (changed) {
       await s.network.setRules(rules);
       await updateRegistry((r) => {
         const t = r.slots[String(s.slot)]?.tabs[tab.targetId];
         if (!t) return;
         const others = (t.blocks ?? []).filter((b) => b.pid !== process.pid && pidAlive(b.pid));
-        t.blocks = [...others, ...rules.map((x) => ({ pattern: x.pattern, agent: x.agent, at: x.at, pid: process.pid }))];
+        t.blocks = [...others, ...rules.map((x) => ({ pattern: x.pattern, agent: x.agent, at: x.at, pid: process.pid, ...(x.label ? { label: x.label } : {}), ...(x.mode ? { mode: x.mode } : {}) }))];
         if (!t.blocks.length) delete t.blocks;
       }).catch(() => undefined);
     }
     const others = liveBlocks(tab).filter((b) => b.pid !== process.pid);
     const lines = [
       changed ? 'Block rules updated.' : 'Current block rules:',
-      `This session: ${rules.length ? rules.map((r) => `${r.pattern} (${r.agent})`).join(', ') : 'none'}`,
+      `This session: ${rules.length ? describeRules(rules) : 'none'}`,
     ];
-    if (others.length) lines.push(`Other sessions: ${others.map((b) => `${b.pattern} (${b.agent})`).join(', ')} — only removable from that session`);
-    lines.push('Blocked requests show in browser_network as "failed … (blocked: pattern)".');
+    if (notes.length) lines.push(...notes.map((n) => `Note: ${n}`));
+    if (others.length) lines.push(`Other sessions: ${describeRules(others)} — only removable from that session`);
+    lines.push('Blocked requests show in browser_network as "failed … (blocked: pattern)", quiet ones as "(not sent: …)". Reload the page for rules to cover scripts it already loaded.');
     return { text: lines.join('\n') };
   }));
 
@@ -1055,6 +1115,8 @@ const INSTRUCTIONS_CLAUDE_CODE = `CDPM: controls Chrome slots ${MIN_SLOT}-${MAX_
 - "Look at 3" / "slot 3" means slot=3. Pass slot to every tool.
 - Start Chrome with browser_launch only when the user asks. Other tools never start a closed slot. "Start one" with no number → omit slot (lowest free slot).
 - The user decides windowed (visible) vs headless (hidden): headless: true only if they say "headless", "hidden" or "no window"; false for "visible window" or "headful". If unstated, don't guess; ask first (once for multiple slots).
+- Browser: always Chrome unless the user names another Chromium browser for a slot ("브레이브로 켜", "open 2 in Edge") → pass browser. Mixed slots (1 Brave, 2 Chrome) are fine.
+- Watch screen: when the user runs several slots, mention once (one short line, not every time) that they can watch them live with \`cdpm watch\`; don't open it unless asked.
 - If the start page is known, pass url (same for all slots) or urls (per slot) to browser_launch so it opens right away (no separate navigation step for subagents).
 - Different jobs on multiple slots (e.g. "open 3, one for Naver, one for Daum…", "log in on 1 and open another site on 2") run in parallel by default: main only calls browser_launch once (slots/count, start URLs url/urls), then immediately hands each slot to its own subagent. Subagents do everything from the first navigation (main doesn't pre-navigate slots). Call the Agent tool several times in one message, all with run_in_background: true (don't launch one at a time or wait for earlier ones). Keep subagent prompts to 1-3 lines: slot number, agent name (e.g. "naver-agent", passed as agent on every tool), and the task. cdpm-browser already knows CDPM usage and rules (login detection, signaling, minimal waiting), so don't re-explain (long prompts cost time). Use subagent_type "cdpm-browser" (CDPM-specific subagent, fast start) if available. At most 20 subagents run at once; with more than 20 slots, launch 20 first and the rest as they finish. Main never works through slots serially, unless the user asks for sequential order.
 - Different jobs on tabs within one slot (e.g. "log in on slot 1's first tab, do X on another site in the second tab") are split per tab just like slots: one subagent per tab (main doesn't hop between tabs). Each uses only its tab number or opens its own with browser_tab_new, with a distinct agent name per tab (e.g. "slot1-tab1"). Same slot, so the one-agent-one-slot rule doesn't apply, and actions queue per tab and run concurrently. If a tab's job needs another to finish first (e.g. only works after login), its agent waits with slot_inbox(wait) and the other notifies with slot_send as soon as it's done (login carries over to other tabs: same profile).
@@ -1078,6 +1140,7 @@ const INSTRUCTIONS_CLAUDE_CODE = `CDPM: controls Chrome slots ${MIN_SLOT}-${MAX_
 - "Pause N" → slot_pause; "resume" → slot_resume. Actions on a paused slot are refused: its agent must not operate it and waits with slot_inbox(wait=600); on the resume message it re-reads with browser_snapshot and continues (never resumes on its own).
 - When a dialog (alert/confirm/prompt/beforeunload) appears, judge from its content and accept/dismiss it yourself with browser_dialog. Ask the user only when it confirms an irreversible action they didn't request (payment, deletion, etc.).
 - If a page opens Chrome's print dialog, the header warns; CDPM does not close it (that tab is frozen until a person does). Tell the user it is open and on which slot and tab, and wait. For a PDF use browser_pdf.
+- A result line starting with [signal] means CDPM saw bot detection, a block/challenge, or session recording on that site (passively, from network traffic). Tell the user in one short line (name the slot and tab). Only report it: block or evade nothing unless the user asks (then browser_block signals). browser_network telemetry: true gives the full analysis.
 - Chrome permission bubbles ("site wants to access other apps and services on this device", notifications, location, camera, mic…) are browser UI the page can wait on; the header warns when one is open (Windows). Answer it yourself with browser_permission when the task needs it (e.g. a work site asking to reach a local app). Ask the user before allowing camera, microphone or location they didn't ask for.`;
 
 /** Claude Code가 아닌 클라이언트(Cursor, Claude Desktop 등)용: Agent 도구·run_in_background·cdpm-browser처럼 Claude Code에만 있는 말을 뺀다. */

@@ -1,14 +1,15 @@
-# v로 시작하는 태그(v0.1.15 등)를 올리면 npm에 배포한다.
+# v로 시작하는 태그(v0.1.20 등)를 올리면 한 번에 배포한다: npm → GitHub 릴리스 글 → MCP 레지스트리.
 # npm 로그인·토큰 없이 배포한다 (trusted publishing: npm이 이 저장소의 이 작업 파일을 믿도록 등록해 둠).
+# MCP 레지스트리도 토큰 없이 올린다 (GitHub가 이 작업에 내주는 신원 증명으로 로그인).
 name: publish
 on:
   push:
     tags: ['v*']
 permissions:
-  contents: read
-  id-token: write
+  contents: write   # 릴리스 글을 만든다
+  id-token: write   # npm·MCP 레지스트리에 이 저장소임을 증명한다
 jobs:
-  npm:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,7 +18,36 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
       - run: npm install -g npm@latest
-      - name: 태그와 package.json 버전이 같은지 확인
-        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+      - name: 태그와 package.json·server.json 버전이 같은지 확인
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          test "$(node -p "require('./package.json').version")" = "$v"
+          test "$(node -p "require('./server.json').version")" = "$v"
+          test "$(node -p "require('./server.json').packages[0].version")" = "$v"
       - run: npm ci
       - run: npm publish
+
+      # 릴리스 글: .github/release-notes/<버전>.md 가 있으면 그것을, 없으면 CHANGELOG.md의 그 버전 구획을 쓴다
+      - name: GitHub 릴리스 글
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          if [ -f ".github/release-notes/$v.md" ]; then
+            cp ".github/release-notes/$v.md" "$RUNNER_TEMP/notes.md"
+          else
+            awk -v v="$v" 'index($0, "## " v " ") == 1 || $0 == "## " v { on = 1; next } on && /^## / { exit } on' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          fi
+          test -s "$RUNNER_TEMP/notes.md"
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --title "$v" --notes-file "$RUNNER_TEMP/notes.md" --latest
+
+      # MCP 레지스트리는 npm에 그 버전이 보여야 받아 준다. npm에 퍼지는 데 몇 분 걸리므로 될 때까지 다시 한다 (최대 10분)
+      - name: MCP 레지스트리
+        run: |
+          curl -fsSL https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz | tar xz -C "$RUNNER_TEMP" mcp-publisher
+          "$RUNNER_TEMP/mcp-publisher" login github-oidc
+          for i in $(seq 1 20); do
+            "$RUNNER_TEMP/mcp-publisher" publish && exit 0
+            sleep 30
+          done
+          exit 1

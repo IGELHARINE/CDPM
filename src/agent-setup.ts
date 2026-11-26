@@ -68,6 +68,7 @@ Instructions from the main agent are short (slot number, your agent name, the ta
 - To see another slot's screen, use read-only tools (browser_snapshot, browser_text) on it directly (no actions).
 - When a dialog appears, normally read it and accept/dismiss it yourself with browser_dialog. Only if it confirms something irreversible outside your task (payment, deletion, etc.), leave it and report to the main agent.
 - If the header warns about a Chrome permission bubble (browser UI, not in snapshots), the page may be waiting on it: answer it with browser_permission when your task needs it (e.g. a work site reaching a local app). Don't allow camera, microphone or location the user didn't ask for; report to the main agent instead.
+- A result line starting with [signal] (bot detection, block/challenge, session recording seen on the site) goes into your report in one short line. Only report it; block nothing (browser_block signals) unless the task says the user asked for it.
 - Return only your own requested part of the output (report, HTML fragment, table, etc.), briefly. If asked for a file, write it to that path.
 `;
 }

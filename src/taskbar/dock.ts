@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { browserConnection } from '../cdp/sessions.js';
 import { paths } from '../paths.js';
+import { isOutdated } from '../version.js';
 import { encodePng, renderIcon } from './icon.js';
 
 export const DOCK_SUPPORTED = process.platform === 'darwin';
@@ -38,7 +39,8 @@ const applied = new Set<string>();
 
 /** macOS에서만: 슬롯 Chrome의 Dock 아이콘을 슬롯 아이콘으로. 실패해도 조용히 넘어간다 (보기용 기능). */
 export async function applyDock(slot: number, pid: number | undefined): Promise<void> {
-  if (!DOCK_SUPPORTED) return;
+  // 옛 코드로 도는 CDPM은 Dock 아이콘을 건드리지 않는다 (새 코드로 도는 CDPM과 서로 덮어쓰지 않게)
+  if (!DOCK_SUPPORTED || isOutdated()) return;
   const key = `${slot}:${pid}`;
   if (applied.has(key)) return;
   try {

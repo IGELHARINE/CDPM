@@ -1,9 +1,10 @@
 // 살아 있는 슬롯 Chrome 창들에 작업표시줄 아이콘을 적용하고, 새로 생긴 창에도 계속 맞춰 준다.
 import { chromeArgs } from '../chrome/launcher.js';
-import { findChrome } from '../chrome/finder.js';
+import { browserSpec, findBrowser } from '../chrome/finder.js';
 import { readRegistry } from '../registry/store.js';
 import { portOf } from '../slots.js';
 import { pidAlive } from '../util.js';
+import { isOutdated } from '../version.js';
 import { ensureIconFile, ICON_VERSION } from './icon.js';
 import { win32 } from './win32.js';
 
@@ -27,6 +28,8 @@ export function canApplyTaskbar(pid: number | undefined): boolean {
 export function applyTaskbar(slot: number, pid: number | undefined): number {
   const w = win32();
   if (!w || !pid) return 0;
+  // 업데이트 뒤 다시 연결하지 않은(옛 코드로 도는) CDPM은 아이콘을 건드리지 않는다: 새 코드로 도는 CDPM과 서로 덮어쓰지 않게
+  if (isOutdated()) return 0;
   const iconPath = ensureIconFile(slot);
   const appId = appIdOf(slot);
   let applied = 0;
@@ -37,11 +40,12 @@ export function applyTaskbar(slot: number, pid: number | undefined): number {
       // 닫힌 창의 기록은 지워지지 않으므로 많아지면 비운다 (다음에 한 번 다시 지정할 뿐)
       if (appliedIcon.size > 500) appliedIcon.clear();
       appliedIcon.set(key, iconPath);
-      const command = [`"${findChrome()}"`, ...chromeArgs(slot).map((a) => (a.includes(' ') ? `"${a}"` : a))].join(' ');
+      const rec = readRegistry().slots[String(slot)];
+      const command = [`"${findBrowser(rec?.browser)}"`, ...chromeArgs(slot, { browser: rec?.browser, headless: rec?.headless }).map((a) => (a.includes(' ') ? `"${a}"` : a))].join(' ');
       w.setAppProps(hwnd, {
         appId,
         relaunchCommand: command,
-        displayName: `Chrome ${slot}번 (${portOf(slot)})`,
+        displayName: `${rec?.browser ? browserSpec(rec.browser).label : 'Chrome'} ${slot}번 (${portOf(slot)})`,
         iconPath,
       });
       applied++;

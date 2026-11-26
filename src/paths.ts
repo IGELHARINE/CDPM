@@ -14,7 +14,8 @@ export const paths = {
   lock: () => path.join(cdpmHome(), 'registry.lock'),
   messages: (slot: number) => path.join(cdpmHome(), 'messages', `${slot}.jsonl`),
   cursors: (slot: number) => path.join(cdpmHome(), 'messages', `${slot}.cursors.json`),
-  profile: (slot: number) => path.join(cdpmHome(), 'profiles', String(slot)),
+  /** 슬롯 프로필. Chrome은 profiles/N 그대로, 다른 브라우저는 profiles/N-brave 처럼 따로 (버전이 다른 브라우저가 한 프로필을 열면 깨지거나 로그인이 풀린다) */
+  profile: (slot: number, browser?: string) => path.join(cdpmHome(), 'profiles', browser && browser !== 'chrome' ? `${slot}-${browser}` : String(slot)),
   icon: (slot: number) => path.join(cdpmHome(), 'icons', `${slot}.ico`),
   config: () => path.join(cdpmHome(), 'config.json'),
   /** 슬롯 켜기·끄기 잠금 (여러 Claude 세션이 같은 슬롯을 동시에 켜거나 끄지 않게) */

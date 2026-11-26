@@ -2,6 +2,8 @@
 // 기록: Network 도메인 이벤트 (DevTools 네트워크 탭과 같은 방식, 페이지는 알 수 없음).
 // 막기: Fetch 도메인으로 패턴에 맞는 요청만 잡아서 실패시킨다. 규칙은 이 연결이 살아 있는 동안만 유효하다.
 import type { CdpConnection } from './client.js';
+import { TelemetryLog } from './telemetry.js';
+import { siteOf } from '../watch/site.js';
 
 export interface NetEntry {
   no: number;            // 이 탭 기록 안에서의 번호 (n1, n2 …)
@@ -26,7 +28,34 @@ export interface BlockRule {
   pattern: string;
   agent: string;
   at: string;
+  /** fail(기본): 요청을 실패시킨다. empty: 보내지 않고 빈 성공 응답을 준다 (페이지는 막힌 줄 모른다) */
+  mode?: 'fail' | 'empty';
+  /** 업체·종류 이름으로 막았으면 그 이름 */
+  label?: string;
+  /** 업체 도메인으로 만든 규칙: 탭에 띄운 사이트 자신의 요청에는 걸지 않는다 (그 업체 사이트를 직접 볼 때) */
+  thirdParty?: boolean;
 }
+
+/** 규칙 목록을 사람이 읽을 줄로: 같은 이름으로 건 패턴은 한 덩어리로 묶는다. */
+export function describeRules(rules: { pattern: string; agent: string; label?: string; mode?: string }[]): string {
+  const groups = new Map<string, { n: number; agent: string; quiet: boolean; label?: string }>();
+  for (const r of rules) {
+    const k = r.label ?? r.pattern;
+    const g = groups.get(k) ?? { n: 0, agent: r.agent, quiet: r.mode === 'empty', label: r.label };
+    g.n++;
+    groups.set(k, g);
+  }
+  return [...groups.entries()].map(([k, g]) => `${k}${g.label ? ` [${g.n} pattern${g.n > 1 ? 's' : ''}]` : ''}${g.quiet ? ' (quiet)' : ''} (${g.agent})`).join(', ');
+}
+
+/** 슬롯 브라우저 연결을 얻는 함수 (sessions.ts가 넣어 준다: 서로 불러오면 순환이 생겨서) */
+let browserOf: ((slot: number) => Promise<CdpConnection>) | undefined;
+export function setBrowserProvider(fn: (slot: number) => Promise<CdpConnection>) {
+  browserOf = fn;
+}
+
+/** 슬롯마다 살아 있는 기록기 (공유 워커에 걸 규칙을 모으려고) */
+const recordersOf = new Map<number, Set<NetworkRecorder>>();
 
 const MAX_ENTRIES = 500;
 const MAX_AGE_MS = 30 * 60_000;
@@ -40,10 +69,25 @@ export class NetworkRecorder {
   /** 아직 끝나지 않은 요청 */
   readonly inflight = new Set<string>();
   rules: BlockRule[] = [];
+  /** 봇 탐지·세션 녹화·분석 신호 (이미 오는 이벤트만 본다) */
+  readonly telemetry = new TelemetryLog();
   /** 규칙이 있는 동안 자동으로 붙은 하위 대상(다른 사이트 iframe 등). 같은 규칙을 건다 */
   private children = new Set<string>();
+  /** 탭에 지금 띄운 사이트 (업체 규칙에서 자기 사이트 요청을 빼려고) */
+  private topSite = '';
+  /** Fetch에서 막았는데 아직 기록 줄이 안 생긴 요청 (networkId → 규칙 표시) */
+  private earlyBlocked = new Map<string, string>();
 
-  constructor(private readonly conn: CdpConnection) {
+  constructor(private readonly conn: CdpConnection, readonly slot = 0, private readonly targetId = '') {
+    if (slot) {
+      const set = recordersOf.get(slot) ?? new Set();
+      set.add(this);
+      recordersOf.set(slot, set);
+      conn.onClosed(() => {
+        set.delete(this);
+        if (this.rules.length) void syncSharedWorkers(slot);
+      });
+    }
     conn.on('Network.requestWillBeSent', (p) => {
       // 리다이렉트는 같은 requestId로 다시 온다 → 새 줄로 기록
       const wall = p.wallTime ? p.wallTime * 1000 : Date.now();
@@ -61,9 +105,14 @@ export class NetworkRecorder {
         type: p.type ?? 'Other', startedAt: wall,
         requestHeaders: p.request.headers, hasPostData: !!p.request.hasPostData,
       };
+      const early = this.earlyBlocked.get(p.requestId);
+      if (early) { e.blockedBy = early; this.earlyBlocked.delete(p.requestId); }
       this.byId.set(p.requestId, e);
       this.entries.push(e);
       this.inflight.add(p.requestId);
+      const post = p.request.postData as string | undefined;
+      const postLen = post?.length ?? (p.request.postDataEntries as { bytes?: string }[] | undefined)?.reduce((n, x) => n + Math.floor((x.bytes?.length ?? 0) * 3 / 4), 0);
+      this.telemetry.onRequest({ url: e.url, method: e.method, type: e.type, postLen, at: wall });
       if (this.entries.length > MAX_ENTRIES) {
         const old = this.entries.shift()!;
         if (this.byId.get(old.requestId) === old) this.byId.delete(old.requestId);
@@ -77,6 +126,15 @@ export class NetworkRecorder {
       // requestServedFromCache(메모리 캐시)가 먼저 표시해 둔 것은 지우지 않는다
       e.fromCache = e.fromCache || p.response.fromDiskCache || p.response.fromServiceWorker || undefined;
       e.responseHeaders = p.response.headers;
+      if (e.type === 'Document') this.telemetry.onDocumentResponse(e.url, p.response.status, e.responseHeaders, Date.now());
+    });
+    // 웹소켓은 Fetch로 막을 수 없지만, 어디에 붙는지는 신호로 본다
+    conn.on('Network.webSocketCreated', (p) => this.telemetry.onRequest({ url: p.url, method: 'GET', type: 'WebSocket', at: Date.now() }));
+    // 이 요청에 실제로 실린 쿠키 이름 (봇 탐지 업체 쿠키를 알아보는 데만 쓴다. 값은 보지 않는다)
+    conn.on('Network.requestWillBeSentExtraInfo', (p) => {
+      const names = (p.associatedCookies as { blockedReasons?: unknown[]; cookie?: { name?: string } }[] | undefined)
+        ?.filter((c) => !c.blockedReasons?.length && c.cookie?.name).map((c) => c.cookie!.name!);
+      if (names?.length) this.telemetry.onCookies(names, Date.now());
     });
     conn.on('Network.requestServedFromCache', (p) => {
       const e = this.byId.get(p.requestId);
@@ -109,16 +167,20 @@ export class NetworkRecorder {
   }
 
   private onPaused(p: any, sessionId?: string) {
-    // Fetch 패턴에 걸린 요청 = 막을 요청
-    const rule = this.rules.find((r) => wildcard(r.pattern).test(p.request.url));
-    const e = !sessionId && p.networkId ? this.byId.get(p.networkId) : undefined;
-    if (e && rule) e.blockedBy = rule.pattern;
-    if (rule) void this.conn.send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'BlockedByClient' }, 5000, sessionId).catch(() => undefined);
-    else void this.conn.send('Fetch.continueRequest', { requestId: p.requestId }, 5000, sessionId).catch(() => undefined);
+    if (!sessionId && p.resourceType === 'Document' && p.frameId === this.targetId) this.topSite = siteOfUrl(p.request.url);
+    const rule = answer(this.conn, this.rules, p, sessionId, { mainFrame: sessionId ? undefined : this.targetId, topSite: this.topSite });
+    if (!rule || sessionId || !p.networkId) return;
+    const mark = rule.mode === 'empty' ? `${rule.label ?? rule.pattern}, answered empty` : rule.label ?? rule.pattern;
+    const e = this.byId.get(p.networkId);
+    if (e) e.blockedBy = mark;
+    else {
+      if (this.earlyBlocked.size > 200) this.earlyBlocked.clear();
+      this.earlyBlocked.set(p.networkId, mark);
+    }
   }
 
   private fetchPatterns() {
-    return { patterns: this.rules.map((r) => ({ urlPattern: r.pattern, requestStage: 'Request' })) };
+    return fetchPatterns(this.rules);
   }
 
   /** 자동으로 붙은 하위 대상: 규칙을 걸고, 그 안의 iframe에도 붙게 한 뒤, 멈춰 있던 대상을 풀어 준다. */
@@ -174,12 +236,115 @@ export class NetworkRecorder {
         await this.conn.send('Network.setCacheDisabled', { cacheDisabled: false }, 5000, sid).catch(() => undefined);
       }
       await this.conn.send('Target.setAutoAttach', { autoAttach: false, waitForDebuggerOnStart: false, flatten: true }, 5000).catch(() => undefined);
-      return;
+    } else {
+      await this.conn.send('Fetch.enable', this.fetchPatterns(), 5000);
+      // 이미 붙어 있는 하위 대상은 새 규칙으로 바꾸고, 아직이면 붙는다 (이미 떠 있는 iframe·워커도 이때 붙음)
+      for (const sid of this.children) await this.conn.send('Fetch.enable', this.fetchPatterns(), 5000, sid).catch(() => undefined);
+      await this.conn.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, 5000).catch(() => undefined);
     }
-    await this.conn.send('Fetch.enable', this.fetchPatterns(), 5000);
-    // 이미 붙어 있는 하위 대상은 새 규칙으로 바꾸고, 아직이면 붙는다 (이미 떠 있는 iframe도 이때 붙음)
-    for (const sid of this.children) await this.conn.send('Fetch.enable', this.fetchPatterns(), 5000, sid).catch(() => undefined);
-    await this.conn.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, 5000).catch(() => undefined);
+    // 공유 워커는 탭에 딸리지 않은 별도 대상이라 슬롯 브라우저 연결에서 따로 붙어 같은 규칙을 건다
+    if (this.slot) await syncSharedWorkers(this.slot);
+  }
+}
+
+function fetchPatterns(rules: BlockRule[]) {
+  return { patterns: rules.map((r) => ({ urlPattern: r.pattern, requestStage: 'Request' })) };
+}
+
+// 빈 응답: 이미지는 1x1 투명 GIF (빈 몸이면 이미지가 오류로 보인다), 나머지는 비어 있는 몸
+const GIF = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+const TYPE_OF: Record<string, string> = { Script: 'application/javascript', Stylesheet: 'text/css', Image: 'image/gif', Document: 'text/html', XHR: 'application/json', Fetch: 'application/json' };
+
+function siteOfUrl(url: string): string {
+  try { return siteOf(new URL(url).hostname); } catch { return ''; }
+}
+
+/** 멈춘 요청에 규칙대로 답한다 (막기·빈 응답·그대로 보내기). 맞은 규칙을 돌려준다. */
+function answer(conn: CdpConnection, rules: BlockRule[], p: any, sessionId?: string, ctx: { mainFrame?: string; topSite?: string } = {}): BlockRule | undefined {
+  // 업체 이름으로 건 규칙은 탭에 띄운 페이지 자체와, 그 사이트 자신의 요청은 막지 않는다
+  // (예: 세션 녹화를 막은 채 contentsquare.com을 직접 열어도 그 사이트는 멀쩡히 보이게)
+  const top = p.resourceType === 'Document' && !!ctx.mainFrame && p.frameId === ctx.mainFrame;
+  const own = !!ctx.topSite && siteOfUrl(p.request.url) === ctx.topSite;
+  const rule = rules.find((r) => !(top && r.label) && !(own && r.thirdParty) && wildcard(r.pattern).test(p.request.url));
+  const send = (m: string, params: Record<string, unknown>) => void conn.send(m, params, 5000, sessionId).catch(() => undefined);
+  if (!rule) send('Fetch.continueRequest', { requestId: p.requestId });
+  else if (rule.mode !== 'empty') send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'BlockedByClient' });
+  else {
+    const origin = Object.entries(p.request.headers ?? {}).find(([k]) => k.toLowerCase() === 'origin')?.[1] as string | undefined;
+    const headers = [
+      { name: 'Content-Type', value: TYPE_OF[p.resourceType] ?? 'text/plain' },
+      { name: 'Cache-Control', value: 'no-store' },
+      ...(origin ? [{ name: 'Access-Control-Allow-Origin', value: origin }, { name: 'Access-Control-Allow-Credentials', value: 'true' }, { name: 'Vary', value: 'Origin' }] : []),
+    ];
+    const status = p.resourceType === 'Ping' ? 204 : 200;
+    send('Fetch.fulfillRequest', { requestId: p.requestId, responseCode: status, responseHeaders: headers, ...(status === 200 && p.resourceType === 'Image' ? { body: GIF } : {}) });
+  }
+  return rule;
+}
+
+// ── 공유 워커 ──
+// 공유 워커(SharedWorker)는 여러 탭이 함께 쓰고 탭 밑에 붙지 않는다. 슬롯에 규칙이 하나라도 있는 동안
+// 브라우저 연결에서 공유 워커에만 자동으로 붙어(시작 전에 멈춘 채로) 그 슬롯 규칙 전체를 건다.
+interface WorkerGuard { conn: CdpConnection; sessions: Set<string>; rules: BlockRule[]; offs: (() => void)[] }
+const guards = new Map<number, WorkerGuard>();
+
+function slotRules(slot: number): BlockRule[] {
+  const seen = new Map<string, BlockRule>();
+  for (const r of recordersOf.get(slot) ?? []) for (const x of r.rules) if (!seen.has(x.pattern)) seen.set(x.pattern, x);
+  return [...seen.values()];
+}
+
+async function syncSharedWorkers(slot: number) {
+  if (!browserOf) return;
+  const rules = slotRules(slot);
+  let g = guards.get(slot);
+  if (!rules.length && !g) return;
+  const conn = await browserOf(slot).catch(() => undefined);
+  if (!conn) return;
+  if (g && g.conn !== conn) { guards.delete(slot); g = undefined; }
+  const apply = async (sid: string) => {
+    const send = (m: string, p: Record<string, unknown> = {}) => conn.send(m, p, 5000, sid).catch(() => undefined);
+    // Fetch만 켠다 (실험: 공유 워커에서 Network.enable을 먼저 켜면 Fetch 가로채기가 걸리지 않는다)
+    await send(g!.rules.length ? 'Fetch.enable' : 'Fetch.disable', g!.rules.length ? fetchPatterns(g!.rules) : {});
+  };
+  if (!g) {
+    if (!rules.length) return;
+    const guard: WorkerGuard = { conn, sessions: new Set(), rules, offs: [] };
+    g = guard;
+    guards.set(slot, guard);
+    guard.offs.push(
+      conn.on('Target.attachedToTarget', async (p) => {
+        if (p.targetInfo?.type !== 'shared_worker') return;
+        // 멈춘 채로 붙은 워커는 무슨 일이 있어도 풀어 준다 (안 풀면 그 워커가 영영 시작하지 않는다)
+        if (!guard.sessions.has(p.sessionId) && guards.get(slot) === guard) {
+          guard.sessions.add(p.sessionId);
+          await apply(p.sessionId);
+        }
+        await conn.send('Runtime.runIfWaitingForDebugger', {}, 5000, p.sessionId).catch(() => undefined);
+      }),
+      conn.on('Target.detachedFromTarget', (p) => guard.sessions.delete(p.sessionId)),
+      conn.onSession('Fetch.requestPaused', (p, sid) => { if (guard.sessions.has(sid)) answer(conn, guard.rules, p, sid); }),
+    );
+  }
+  g.rules = rules;
+  if (rules.length) {
+    await conn.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{ type: 'shared_worker', exclude: false }, { exclude: true }] }, 5000).catch(() => undefined);
+    // 이미 돌고 있는 공유 워커에도 붙는다
+    const { targetInfos = [] } = await conn.send<{ targetInfos: { targetId: string; type: string; attached: boolean }[] }>('Target.getTargets', {}, 5000).catch(() => ({ targetInfos: [] }));
+    for (const t of targetInfos.filter((x) => x.type === 'shared_worker')) {
+      const r = await conn.send<{ sessionId: string }>('Target.attachToTarget', { targetId: t.targetId, flatten: true }, 5000).catch(() => undefined);
+      if (r && !g.sessions.has(r.sessionId)) { g.sessions.add(r.sessionId); await apply(r.sessionId); }
+    }
+    for (const sid of g.sessions) await apply(sid);
+  } else {
+    for (const sid of g.sessions) {
+      await apply(sid);
+      await conn.send('Target.detachFromTarget', { sessionId: sid }, 5000).catch(() => undefined);
+    }
+    g.sessions.clear();
+    await conn.send('Target.setAutoAttach', { autoAttach: false, waitForDebuggerOnStart: false, flatten: true }, 5000).catch(() => undefined);
+    for (const off of g.offs) off();
+    guards.delete(slot);
   }
 }
 

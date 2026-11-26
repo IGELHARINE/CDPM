@@ -6,7 +6,7 @@ import { paths } from '../paths.js';
 import { removeIfOwnerDead, withFileLock } from '../registry/lock.js';
 import { CdpConnection, CdpTimeoutError } from './client.js';
 import { noteDownloadBegin, noteDownloadProgress } from './downloads.js';
-import { NetworkRecorder } from './network.js';
+import { NetworkRecorder, setBrowserProvider } from './network.js';
 import { listFrameTargets, listPages, probe } from './targets.js';
 
 export interface DialogInfo {
@@ -73,7 +73,7 @@ export class PageSession {
     readonly targetId: string,
     readonly conn: CdpConnection,
   ) {
-    this.network = new NetworkRecorder(conn);
+    this.network = new NetworkRecorder(conn, slot, targetId);
     conn.on('Page.javascriptDialogOpening', (p) => {
       this.dialog = { type: p.type, message: p.message, at: new Date().toISOString() };
       this.watchLiveness();
@@ -458,6 +458,8 @@ export async function browserConnection(slot: number): Promise<CdpConnection> {
     browserConnecting.delete(slot);
   }
 }
+
+setBrowserProvider(browserConnection);
 
 /** 탭 연결을 얻는다. 같은 탭에 동시에 요청이 와도 연결은 하나만 만든다. */
 export async function pageSession(slot: number, targetId: string, wsUrl?: string): Promise<PageSession> {
