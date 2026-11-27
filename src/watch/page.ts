@@ -34,6 +34,29 @@ button { font: inherit; color: inherit; }
 .cell.ghost .shot { filter: saturate(.6); }
 .cell.ghost.landing { opacity: .4; }
 .empty.hide { display: none; }
+/* 탭을 멈추게 하는 것(알림창·권한 요청)은 칸 화면 아래쪽에 떠 있다고만 보여 준다 */
+.notice:empty { display: none; }
+.notice:has(.jsdlg) { all: unset; }
+/* 인쇄 창 칸: 탭이 아니라 그 슬롯에 떠 있는 인쇄 창 하나 */
+.head .pr { font-style: normal; font-size: 10px; font-weight: 700; color: color-mix(in srgb, var(--c) var(--numPct), var(--numTo)); background: color-mix(in srgb, var(--c) 20%, transparent); border: 1px solid var(--c); border-radius: 3px; padding: 0 4px; margin-right: 6px; }
+.cell.print { border-color: var(--c); cursor: zoom-in; }
+.cell.perm { cursor: default; }
+/* 크롬이 실제로 그리는 알림창·권한 말풍선 모양 (칸 크기에 맞춰 같은 비율로 줄어든다) */
+.shot { container-type: inline-size; }
+.jsdlg, .pbub { position: absolute; background: #fff; color: #1f1f1f; border-radius: 0.8em; box-shadow: 0 0.25em 1.2em rgba(0,0,0,.35); font: 400 clamp(6px, 2.3cqw, 14px)/1.45 -apple-system, "Segoe UI", "Apple SD Gothic Neo", sans-serif; text-align: left; pointer-events: none; }
+.jsdlg { top: 3%; left: 50%; transform: translateX(-50%); width: min(90%, 32em); padding: 1.3em 1.5em 1.1em; }
+.pbub { position: relative; width: min(88%, 26em); margin: 6% auto 0; padding: 1.2em 1.3em 1em; }
+.jsdlg .ti, .pbub .ti { font-weight: 600; margin-bottom: 0.7em; }
+.jsdlg .ms { white-space: pre-wrap; word-break: break-word; max-height: 9em; overflow: hidden; }
+.jsdlg .in { border: 1px solid #747775; border-radius: 0.3em; padding: 0.35em 0.5em; margin-top: 0.8em; min-height: 1.45em; }
+.pbub .pl { display: flex; align-items: center; gap: 0.6em; padding: 0.3em 0; }
+.pbub .pl i { width: 1.1em; height: 1.1em; border-radius: 50%; background: #e8eaed; box-shadow: inset 0 0 0 0.3em #fff, inset 0 0 0 1em #5f6368; flex: none; }
+.jsdlg .bt, .pbub .bt { display: flex; justify-content: flex-end; gap: 0.5em; margin-top: 1.1em; }
+.jsdlg .bt span, .pbub .bt span { border: 1px solid #747775; border-radius: 2em; padding: 0.4em 1.2em; color: #0b57d0; font-weight: 500; }
+.jsdlg .bt span.p { background: #0b57d0; border-color: #0b57d0; color: #fff; }
+.notice { position: absolute; left: 8px; right: 8px; bottom: 8px; background: var(--pop); border: 1px solid var(--popLine); border-left: 3px solid #f59e0b; border-radius: 6px; padding: 7px 9px; box-shadow: 0 6px 20px rgba(0,0,0,.35); pointer-events: none; text-align: left; font-size: 12px; color: var(--txt); }
+.notice b { display: block; color: var(--strong); font-size: 11.5px; margin-bottom: 2px; }
+.notice .msg { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; word-break: break-word; }
 .ghead { position: sticky; top: 0; align-self: start; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; color: var(--muted); font-size: 10px; cursor: context-menu; }
 .ghead .tag { background: #f59e0b; color: #111; font-weight: 700; font-size: 9px; border-radius: 4px; padding: 0 4px; }
 /* 접어 둔 슬롯: 숫자만 흐리게 남는다 (누르면 다시 펼친다) */
@@ -60,7 +83,7 @@ button { font: inherit; color: inherit; }
 .cell.live .lamp { background: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,.25); }
 /* 그 창에서 지금 앞에 보이는 탭에만 별을 붙인다 (숨은 탭에는 아무 표시도 하지 않는다) */
 .star { font-style: normal; margin-right: 5px; font-size: 11px; }
-.shot { aspect-ratio: 16 / 9; background: var(--shot); display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.shot { position: relative; aspect-ratio: 16 / 9; background: var(--shot); display: flex; align-items: center; justify-content: center; color: var(--muted); }
 /* 창 모양이 칸과 비슷하면 칸을 꽉 채운다 (조금 넘치는 쪽이 잘린다). 많이 다르면(.fit: 세로로 긴 창 등) 잘라 키우지 않고
    전체를 제 비율대로 넣는다: 남는 자리는 검은색이 아니라 칸 바탕색이다. 크게 볼 때는 늘 전체를 보여 준다 */
 .shot img { width: 100%; height: 100%; object-fit: cover; object-position: top; display: block; pointer-events: none; }
@@ -171,9 +194,44 @@ function meta(k, t) {
   return t.last ? esc(t.last.agent) + ' ' + esc(t.last.action) + ' ' + ago(t.last.at) : '';
 }
 const STAR = '<i class="star" title="front tab of its window">★</i>';
+// 탭을 멈추게 하는 것 (알림창·권한 요청·응답 없음): 떠 있다는 것과 그 내용만 보여 준다 (답은 브라우저 창에서)
+const DIALOG_NAME = { alert: 'Alert', confirm: 'Confirm', prompt: 'Prompt', beforeunload: 'Leave this page?' };
+// 크롬이 실제로 그리는 모양대로: 페이지 위쪽 가운데 하얀 창, "<주소> 내용:", 메시지, 확인·취소 (눌리지는 않는다: 답은 브라우저 창에서)
+const KO = /^ko/i.test(navigator.language);
+const L = KO ? { says: (h) => h + ' 내용:', ok: '확인', cancel: '취소', leaveT: '사이트에서 나가시겠습니까?', leaveM: '변경사항이 저장되지 않을 수 있습니다.', leave: '나가기' }
+  : { says: (h) => h + ' says', ok: 'OK', cancel: 'Cancel', leaveT: 'Leave site?', leaveM: 'Changes you made may not be saved.', leave: 'Leave' };
+function chromeDialog(t) {
+  const d = t.dialog;
+  let host = '';
+  try { const u = new URL(t.url); host = /^https?:$/.test(u.protocol) ? u.host : ''; } catch { /* about:blank 등 */ }
+  const btn = (x, primary) => '<span' + (primary ? ' class="p"' : '') + '>' + esc(x) + '</span>';
+  if (d.type === 'beforeunload') return '<div class="jsdlg"><div class="ti">' + esc(L.leaveT) + '</div><div>' + esc(L.leaveM) + '</div><div class="bt">' + btn(L.leave, true) + btn(L.cancel) + '</div></div>';
+  return '<div class="jsdlg">' + (host ? '<div class="ti">' + esc(L.says(host)) + '</div>' : '') + '<div class="ms">' + esc(d.message || '') + '</div>'
+    + (d.type === 'prompt' ? '<div class="in">' + esc(d.defaultPrompt || '') + '</div>' : '')
+    + '<div class="bt">' + btn(L.ok, true) + (d.type === 'alert' ? '' : btn(L.cancel)) + '</div></div>';
+}
+function notice(t) {
+  if (t.dialog) return chromeDialog(t);
+  // 관제가 붙기 전에 뜬 알림창은 Chrome이 알려 주지 않는다 (실측). 내용을 모르므로 따로 상자를 띄우지 않는다
+  return '';
+}
+// 칸 제목: 앞 탭 별표, 인쇄 창이면 앞에 Print
+const titleHtml = (t) => (t.front ? STAR : '') + (t.print ? '<i class="pr">Print</i>' : '') + esc(t.title || t.url);
+// Chrome 권한 요청 말풍선: 슬롯에 따로 한 칸 (화면 대신 말풍선 내용)
+function bubbleCell(s, b) {
+  const texts = (b.texts || []).filter((x) => x !== b.title);
+  // macOS는 창 제목이 "example.com의 권한 요청: 내 위치 확인"처럼 내용까지 담는다 → 제목에서 내용 부분은 떼어 한 번만 보여 준다
+  const cut = b.title.lastIndexOf(': ');
+  const head = cut > 0 && texts.includes(b.title.slice(cut + 2)) ? b.title.slice(0, cut) : b.title;
+  // 크롬 권한 말풍선 모양: 제목, 권한 한 줄(아이콘), 크롬이 단 버튼 이름 그대로 (눌리지는 않는다)
+  const buttons = (b.buttons || []).filter((x) => !/^(닫기|close)$/i.test(x));
+  return '<figure class="cell print perm" style="--c:' + s.color + '" data-b="' + esc(b.key) + '"><div class="head"><span class="t"><i class="pr">Permission</i>' + esc(head) + '</span></div>'
+    + '<div class="shot"><div class="pbub"><div class="ti">' + esc(head) + '</div>' + texts.map((x) => '<div class="pl"><i></i>' + esc(x) + '</div>').join('')
+    + (buttons.length ? '<div class="bt">' + buttons.map((x) => '<span>' + esc(x) + '</span>').join('') + '</div>' : '') + '</div></div></figure>';
+}
 function cell(s, t, i) {
   const k = s.no + ':' + t.targetId, f = frames.get(k);
-  return '<figure class="cell ' + (liveNow(t) ? 'live ' : '') + (big === k ? 'big ' : '') + (fresh.has(k) ? 'fresh' : '') + '" draggable="true" style="--c:' + s.color + '" data-k="' + k + '"><div class="head"><span class="t" title="' + esc(t.url) + '">' + (t.front ? STAR : '') + esc(t.title || t.url) + '</span><b>' + (t.id || '#' + (i + 1)) + '</b><span class="m">' + meta(k, t) + '</span><i class="lamp"></i><button class="x" title="Close tab" aria-label="Close tab">×</button></div><div class="shot">' + (f ? '<img src="data:image/jpeg;base64,' + f + '" alt="">' : '…') + '</div></figure>';
+  return '<figure class="cell ' + (liveNow(t) ? 'live ' : '') + (big === k ? 'big ' : '') + (fresh.has(k) ? 'fresh' : '') + (t.print ? ' print' : '') + '" draggable="' + (t.print ? 'false' : 'true') + '" style="--c:' + s.color + '" data-k="' + k + '"><div class="head"><span class="t" title="' + esc(t.url) + '">' + titleHtml(t) + '</span><b>' + (t.print ? '' : t.id || '#' + (i + 1)) + '</b><span class="m">' + meta(k, t) + '</span><i class="lamp"></i>' + (t.print ? '' : '<button class="x" title="Close tab" aria-label="Close tab">×</button>') + '</div><div class="shot">' + (f ? '<img src="data:image/jpeg;base64,' + f + '" alt="">' : '…') + '<div class="notice">' + notice(t) + '</div></div></figure>';
 }
 function ghead(s) {
   const flags = [s.running ? '' : 'off', s.headless ? 'headless' : '', s.proxy ? 'proxy' : ''].filter(Boolean);
@@ -181,16 +239,18 @@ function ghead(s) {
 }
 // 칸 구성 (이게 같으면 칸을 다시 만들지 않는다)
 let drawnSig = '';
-const layoutSig = () => JSON.stringify([cols, big, [...folded], [...pick], slots.map((s) => [s.no, s.running, !!s.paused, !!s.headless, !!s.proxy, s.tabs.map((t) => t.targetId)])]);
+const layoutSig = () => JSON.stringify([cols, big, [...folded], [...pick], slots.map((s) => [s.no, s.running, !!s.paused, !!s.headless, !!s.proxy, s.tabs.map((t) => t.targetId), (s.bubbles || []).map((b) => b.key + (b.texts ? '+' : ''))])]);
 function patchCells() {
   for (const s of slots) for (const t of s.tabs) {
     const k = s.no + ':' + t.targetId, el = document.querySelector('.cell[data-k="' + k + '"]');
     if (!el) continue;
-    const tt = el.querySelector('.t'), html = (t.front ? STAR : '') + esc(t.title || t.url);
+    const tt = el.querySelector('.t'), html = titleHtml(t);
     if (tt.innerHTML !== html) tt.innerHTML = html;
     if (tt.title !== t.url) tt.title = t.url;
     const m = el.querySelector('.m'), mh = meta(k, t);
     if (m.innerHTML !== mh) m.innerHTML = mh;
+    const nt = el.querySelector('.notice'), nh = notice(t);
+    if (nt && nt.dataset.h !== nh) { nt.dataset.h = nh; nt.innerHTML = nh; }
     el.classList.toggle('live', !!liveNow(t));
   }
 }
@@ -202,7 +262,7 @@ function render() {
   const n = cols || Math.max(1, Math.ceil(Math.sqrt(most)));
   const digits = L.reduce((a, s) => Math.max(a, String(s.no).length), 1);
   const gw = Math.max(44, Math.round((digits * 12 + (digits - 1) * 3.5) / 20 * 44));
-  $('view').innerHTML = L.map((s) => '<div class="group ' + (folded.has(s.no) ? 'folded ' : '') + (s.running ? '' : 'off') + '" data-s="' + s.no + '" style="--c:' + s.color + ';--gw:' + gw + 'px">' + ghead(s) + '<div class="grid" style="--n:' + n + '">' + (order(s).map((x) => cell(s, x.t, x.i)).join('') || '<div class="empty">' + (s.running ? 'No tabs. Drop a tab here to move it to this slot.' : 'Slot is off.') + '</div>') + '</div></div>').join('') || '<div id="empty">No slots to show. Launch a slot and it appears here.</div>';
+  $('view').innerHTML = L.map((s) => '<div class="group ' + (folded.has(s.no) ? 'folded ' : '') + (s.running ? '' : 'off') + '" data-s="' + s.no + '" style="--c:' + s.color + ';--gw:' + gw + 'px">' + ghead(s) + '<div class="grid" style="--n:' + n + '">' + ((order(s).map((x) => cell(s, x.t, x.i)).join('') + (s.bubbles || []).map((b) => bubbleCell(s, b)).join('')) || '<div class="empty">' + (s.running ? 'No tabs. Drop a tab here to move it to this slot.' : 'Slot is off.') + '</div>') + '</div></div>').join('') || '<div id="empty">No slots to show. Launch a slot and it appears here.</div>';
   document.querySelectorAll('[data-c]').forEach((b) => b.classList.toggle('on', Number(b.dataset.c) === cols));
   fresh.clear();
   if (measure()) tell();   // 칸 수나 보는 슬롯이 바뀌어 칸 크기가 달라졌으면 알린다
@@ -215,7 +275,9 @@ function renderSide() {
   const chip = (n) => '<span class="chip num" style="--c:' + colorOf(n) + '" title="slot ' + n + '">' + seg(n) + '</span>';
   // 에이전트끼리 주고받은 메시지만 보여 준다 (관제 화면이 보낸 'user (watch)' 안내는 사람이 한 일이라 뺀다)
   const all = [...msgs.entries()].filter(([n]) => nums.has(n)).flatMap(([n, items]) => items.map((m) => ({ ...m, slot: n }))).filter((m) => m.from !== 'user (watch)').sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, 100);   // 가장 최근 100개만
-  const html = all.map((m) => '<div class="ev"><div class="meta"><time>' + clock(m.at) + '</time>' + chip(m.slot) + '</div><div class="body"><div><span class="who">' + esc(m.from) + '</span>' + (m.to ? ' → ' + esc(m.to) : '') + '</div><div class="txt">' + esc(m.text) + '</div></div></div>').join('') || '<div class="none">No agent messages yet.</div>';
+  // 멈춤·다시 시작 알림은 에이전트에게 주는 긴 지시문이라 사람이 볼 짧은 말로 바꾼다
+  const short = (m) => /^\[paused\]/.test(m.text) ? 'Slot ' + m.slot + ' paused' : /^\[resumed\]/.test(m.text) ? 'Slot ' + m.slot + ' resumed' : m.text;
+  const html = all.map((m) => '<div class="ev"><div class="meta"><time>' + clock(m.at) + '</time>' + chip(m.slot) + '</div><div class="body"><div><span class="who">' + esc(m.from) + '</span>' + (m.to ? ' → ' + esc(m.to) : '') + '</div><div class="txt">' + esc(short(m)) + '</div></div></div>').join('') || '<div class="none">No agent messages yet.</div>';
   feed.innerHTML = html;
   if (!atTop) feed.scrollTop = prevTop + (feed.scrollHeight - prevH);
 }
@@ -244,14 +306,16 @@ function connect() {
     if (known) for (const k of now) if (!known.has(k)) fresh.add(k);   // 새로 열린 탭은 칸이 생길 때 한 번 튄다
     known = now;
     for (const k of frames.keys()) if (!now.has(k)) frames.delete(k);
-    if (!fresh.size && layoutSig() === drawnSig) patchCells(); else render();
+    // 끄는 중에는 칸을 다시 만들지 않는다 (끌던 칸이 사라져 놓기가 꼬이지 않게). 놓거나 그만두면 그때 다시 그린다
+    if (drag || (!fresh.size && layoutSig() === drawnSig)) { patchCells(); if (drag) laterRender = true; } else render();
     renderSide();
   });
   es.addEventListener('frame', (e) => {
     const f = JSON.parse(e.data), k = f.slot + ':' + f.id;
     frames.set(k, f.data);
     const el = document.querySelector('.cell[data-k="' + k + '"] .shot');
-    if (el) { let img = el.querySelector('img'); if (!img) { el.textContent = ''; img = el.appendChild(document.createElement('img')); } img.src = 'data:image/jpeg;base64,' + f.data; }
+    // 첫 화면이면 '…' 글자만 지우고 그림을 안내(.notice) 앞에 넣는다 (안내는 남긴다)
+    if (el) { let img = el.querySelector('img'); if (!img) { for (const n of [...el.childNodes]) if (n.nodeType === 3) n.remove(); img = el.insertBefore(document.createElement('img'), el.firstChild); } img.src = 'data:image/jpeg;base64,' + f.data; }
   });
   es.addEventListener('messages', (e) => { const m = JSON.parse(e.data); msgs.set(m.slot, m.items); renderSide(); });
   es.onerror = () => { $('state').textContent = 'reconnecting…'; };
@@ -280,7 +344,8 @@ function fold(no, only) {
 
 // ── 크게 보기: 칸을 누르면 그 자리에서 한 줄을 다 차지하고, 그 탭만 빠르고 크게 받는다 ──
 function zoom(k) { big = big === k ? null : k; tell(); render(); if (big) document.querySelector('.cell.big')?.scrollIntoView({ block: 'nearest' }); }
-$('view').addEventListener('click', (e) => { const x = e.target.closest('.cell .x'); if (x) { e.stopPropagation(); const c = x.closest('.cell'), k = c.dataset.k; c.classList.add('busy'); return void api('/api/tab', { slot: Number(k.split(':')[0]), targetId: k.slice(k.indexOf(':') + 1), action: 'close' }).then((r) => { if (!r.ok) { c.classList.remove('busy'); toast(r.message || 'Failed'); } }, () => c.classList.remove('busy')); } const num = e.target.closest('.ghead .num'); if (num) return fold(Number(num.closest('.ghead').dataset.s)); const t = e.target.closest('.cell'); if (t) zoom(t.dataset.k); });
+$('view').addEventListener('click', (e) => {
+  const x = e.target.closest('.cell .x'); if (x) { e.stopPropagation(); const c = x.closest('.cell'), k = c.dataset.k; c.classList.add('busy'); return void api('/api/tab', { slot: Number(k.split(':')[0]), targetId: k.slice(k.indexOf(':') + 1), action: 'close' }).then((r) => { if (!r.ok) { c.classList.remove('busy'); toast(r.message || 'Failed'); } }, () => c.classList.remove('busy')); } const num = e.target.closest('.ghead .num'); if (num) return fold(Number(num.closest('.ghead').dataset.s)); const t = e.target.closest('.cell'); if (t?.dataset.k) zoom(t.dataset.k); });
 
 // ── 다른 슬롯으로 넘기기 ──
 function dialog(title, text, notes, questions, buttons) {
@@ -314,7 +379,8 @@ async function move(k, to) {
 
 $('view').addEventListener('dragstart', (e) => { const t = e.target.closest('.cell'); if (!t) return; drag = t.dataset.k; t.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', drag); });
 // 놓일 자리 미리보기: 끌고 있는 칸을 본뜬 반투명 칸을 받을 슬롯 칸들의 맨 끝에 하나만 둔다
-let ghostAt = null;
+let ghostAt = null, laterRender = false;
+const afterDrag = () => { if (laterRender) { laterRender = false; render(); } };
 function clearGhost() {
   document.querySelectorAll('.cell.ghost:not(.landing)').forEach((el) => el.remove());
   document.querySelectorAll('.empty.hide').forEach((el) => el.classList.remove('hide'));
@@ -333,7 +399,9 @@ function showGhost(z) {
   grid.append(g);
   ghostAt = z;
 }
-addEventListener('dragend', () => { drag = null; clearGhost(); document.querySelectorAll('.dragging').forEach((el) => el.classList.remove('dragging')); });
+addEventListener('dragend', () => { drag = null; clearGhost(); document.querySelectorAll('.dragging').forEach((el) => el.classList.remove('dragging')); afterDrag(); });
+// 관제 화면 밖에 놓거나 다른 것을 놓아도 끌던 상태를 지운다
+addEventListener('drop', () => { if (drag) setTimeout(() => { drag = null; clearGhost(); afterDrag(); }, 0); });
 for (const root of [$('view')]) {
   root.addEventListener('dragover', (e) => {
     if (!drag) return;
@@ -343,12 +411,12 @@ for (const root of [$('view')]) {
     showGhost(z);
   });
   root.addEventListener('drop', async (e) => {
-    const z = e.target.closest('.group'); if (!z || !drag) return;
+    const z = e.target.closest('.group'); if (!z || !drag || !e.dataTransfer?.types.includes('text/plain') || e.dataTransfer.getData('text/plain') !== drag) return;
     e.preventDefault();
     const k = drag; drag = null;
     // 옮기는 동안 미리보기 칸을 그 자리에 남겨 둔다 (진짜 칸이 생기면 지운다)
     const g = z.querySelector('.cell.ghost'); g?.classList.add('landing'); ghostAt = null;
-    try { await move(k, Number(z.dataset.s)); } finally { g?.remove(); document.querySelectorAll('.empty.hide').forEach((el) => el.classList.remove('hide')); }
+    try { await move(k, Number(z.dataset.s)); } finally { g?.remove(); document.querySelectorAll('.empty.hide').forEach((el) => el.classList.remove('hide')); afterDrag(); }
   });
 }
 
@@ -368,6 +436,7 @@ $('view').addEventListener('contextmenu', (e) => {
   const head = e.target.closest('.ghead'); if (head) { e.preventDefault(); return slotMenu(Number(head.dataset.s), e); }
   const el = e.target.closest('.cell'); if (!el) return;
   e.preventDefault();
+  if (el.classList.contains('print')) return;   // 인쇄 창 칸에는 탭 메뉴가 없다
   const k = el.dataset.k, no = Number(k.split(':')[0]), id = k.slice(k.indexOf(':') + 1), s = slots.find((x) => x.no === no), t = s.tabs.find((x) => x.targetId === id);
   const others = slots.filter((x) => x.no !== no && x.running);
   openMenu('<div class="h">slot ' + no + ' · ' + esc(t.id || '') + ' · ' + esc(t.title || t.url) + '</div>'

@@ -20,7 +20,7 @@ const MAX_REMOVED_SHOWN = 15;
 
 function footer(p: { page: number; pages: number }, total: number): string {
   if (p.pages <= 1) return '';
-  return `\n— page 1/${p.pages} (${total.toLocaleString()} chars total) · continue: browser_snapshot page=2`;
+  return `\n— page 1/${p.pages} (${total.toLocaleString()} chars total) · more: browser_snapshot find="…" or interactive=true (page=2 only if you must)`;
 }
 
 /** 스냅샷 1쪽 (browser_snapshot과 같은 모양). */

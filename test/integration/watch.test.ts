@@ -161,6 +161,38 @@ describe('관제: 탭을 다른 슬롯으로 넘기기', () => {
     }
   });
 
+  it('관제: 탭에 뜬 알림창을 보여 주고, 닫히면 표시도 사라진다', async () => {
+    const w = await startWatchServer(0);
+    try {
+      const url = `http://127.0.0.1:${w.port}`;
+      const { targetId, page } = await open(A, `${base}/home`);
+      let state = '';
+      const ctl = new AbortController();
+      const stream = fetch(`${url}/events?token=${w.token}&slots=${A}`, { signal: ctl.signal }).then(async (r) => {
+        const reader = r.body!.getReader(); const dec = new TextDecoder(); let buf = '';
+        for (;;) { const { value, done } = await reader.read(); if (done) break; buf += dec.decode(value, { stream: true }); const parts = buf.split('\n\n'); buf = parts.pop() ?? ''; for (const b of parts) if (b.startsWith('event: state')) state = b.slice(b.indexOf('data: ') + 6); }
+      }).catch(() => undefined);
+      // 관제가 이 탭에 붙을 때까지 기다린 뒤 확인창을 띄운다
+      for (let i = 0; i < 50 && !state.includes(targetId); i++) await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 2000));
+      const answer = page.send<{ result: { value: boolean } }>('Runtime.evaluate', { expression: "confirm('지울까요?')", returnByValue: true }, 30_000);
+      for (let i = 0; i < 50 && !state.includes('지울까요?'); i++) await new Promise((r) => setTimeout(r, 100));
+      assert.match(state, /"dialog":\{"type":"confirm","message":"지울까요\?"/);
+      // 답은 브라우저 쪽에서 (관제는 보여 주기만 한다)
+      await page.send('Page.handleJavaScriptDialog', { accept: true });
+      assert.equal((await answer).result.value, true);
+      for (let i = 0; i < 30 && state.includes('지울까요?'); i++) await new Promise((r) => setTimeout(r, 100));
+      assert.ok(!state.includes('"dialog"'), '닫힌 뒤에도 알림창 표시가 남음');
+      // 슬롯 번호가 1~99 밖이면 거절
+      assert.equal((await fetch(`${url}/api/tab`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CDPM-Watch': w.token }, body: JSON.stringify({ slot: 50000, targetId, action: 'reload' }) })).status, 400);
+      page.close();
+      ctl.abort();
+      await stream;
+    } finally {
+      w.close(false);
+    }
+  });
+
   it('꺼진 슬롯, 다시 열 수 없는 화면, 이미 닫힌 탭', async () => {
     await clearB();
     const { targetId, page } = await open(A, `${base}/home`);

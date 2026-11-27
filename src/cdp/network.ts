@@ -34,6 +34,8 @@ export interface BlockRule {
   label?: string;
   /** 업체 도메인으로 만든 규칙: 탭에 띄운 사이트 자신의 요청에는 걸지 않는다 (그 업체 사이트를 직접 볼 때) */
   thirdParty?: boolean;
+  /** 보내는 요청(POST·beacon)만 막는다 (이름 없는 수집 주소: 같은 주소의 GET은 앱이 쓰는 것일 수 있어서) */
+  postOnly?: boolean;
 }
 
 /** 규칙 목록을 사람이 읽을 줄로: 같은 이름으로 건 패턴은 한 덩어리로 묶는다. */
@@ -68,6 +70,8 @@ export class NetworkRecorder {
   private wallOffset: number | undefined;
   /** 아직 끝나지 않은 요청 */
   readonly inflight = new Set<string>();
+  /** 진행 중 요청이 어느 프레임 것인지 (프레임이 다른 프로세스로 넘어가면 끝 신호가 이 연결로 오지 않아 직접 지운다) */
+  private frameOf = new Map<string, string>();
   rules: BlockRule[] = [];
   /** 봇 탐지·세션 녹화·분석 신호 (이미 오는 이벤트만 본다) */
   readonly telemetry = new TelemetryLog();
@@ -105,11 +109,14 @@ export class NetworkRecorder {
         type: p.type ?? 'Other', startedAt: wall,
         requestHeaders: p.request.headers, hasPostData: !!p.request.hasPostData,
       };
+      // 맨 위 문서가 바뀌면 그 사이트를 기억한다 (업체 규칙에서 자기 사이트 요청 빼기, 신호를 사이트별로 알리기)
+      if (p.type === 'Document' && this.targetId && p.frameId === this.targetId) this.setTopUrl(p.request.url);
       const early = this.earlyBlocked.get(p.requestId);
       if (early) { e.blockedBy = early; this.earlyBlocked.delete(p.requestId); }
       this.byId.set(p.requestId, e);
       this.entries.push(e);
       this.inflight.add(p.requestId);
+      if (p.frameId) this.frameOf.set(p.requestId, p.frameId);
       const post = p.request.postData as string | undefined;
       const postLen = post?.length ?? (p.request.postDataEntries as { bytes?: string }[] | undefined)?.reduce((n, x) => n + Math.floor((x.bytes?.length ?? 0) * 3 / 4), 0);
       this.telemetry.onRequest({ url: e.url, method: e.method, type: e.type, postLen, at: wall });
@@ -126,7 +133,7 @@ export class NetworkRecorder {
       // requestServedFromCache(메모리 캐시)가 먼저 표시해 둔 것은 지우지 않는다
       e.fromCache = e.fromCache || p.response.fromDiskCache || p.response.fromServiceWorker || undefined;
       e.responseHeaders = p.response.headers;
-      if (e.type === 'Document') this.telemetry.onDocumentResponse(e.url, p.response.status, e.responseHeaders, Date.now());
+      if (e.type === 'Document' && (!this.targetId || p.frameId === this.targetId)) this.telemetry.onDocumentResponse(e.url, p.response.status, e.responseHeaders, Date.now());
     });
     // 웹소켓은 Fetch로 막을 수 없지만, 어디에 붙는지는 신호로 본다
     conn.on('Network.webSocketCreated', (p) => this.telemetry.onRequest({ url: p.url, method: 'GET', type: 'WebSocket', at: Date.now() }));
@@ -140,8 +147,14 @@ export class NetworkRecorder {
       const e = this.byId.get(p.requestId);
       if (e) e.fromCache = true;
     });
+    // 다른 사이트 iframe: 문서를 받는 중에 그 프레임이 별도 프로세스(대상)로 넘어가면 이 연결에는 '떨어져 나감'만 오고
+    // 다 받았다는 신호는 오지 않는다 (실측). 그대로 두면 그 요청이 영원히 '진행 중'으로 남아 네트워크 조용함 기다리기가 끝나지 않는다.
+    conn.on('Page.frameDetached', (p) => {
+      for (const [id, f] of this.frameOf) if (f === p.frameId) { this.inflight.delete(id); this.frameOf.delete(id); }
+    });
     conn.on('Network.loadingFinished', (p) => {
       this.inflight.delete(p.requestId);
+      this.frameOf.delete(p.requestId);
       const e = this.byId.get(p.requestId);
       if (!e) return;
       e.size = p.encodedDataLength;
@@ -149,6 +162,7 @@ export class NetworkRecorder {
     });
     conn.on('Network.loadingFailed', (p) => {
       this.inflight.delete(p.requestId);
+      this.frameOf.delete(p.requestId);
       const e = this.byId.get(p.requestId);
       if (!e) return;
       e.failed = p.blockedReason ? `${p.errorText} (${p.blockedReason})` : p.errorText;
@@ -166,8 +180,16 @@ export class NetworkRecorder {
     conn.onSession('Target.detachedFromTarget', detached);
   }
 
+  /** 탭에 띄운 페이지 주소를 알려 준다 (규칙을 걸 때 지금 페이지로 맞추고, 이동할 때마다 갱신) */
+  setTopUrl(url: string) {
+    const site = siteOfUrl(url);
+    if (!site) return;
+    this.topSite = site;
+    this.telemetry.site = site;
+  }
+
   private onPaused(p: any, sessionId?: string) {
-    if (!sessionId && p.resourceType === 'Document' && p.frameId === this.targetId) this.topSite = siteOfUrl(p.request.url);
+    if (!sessionId && p.resourceType === 'Document' && p.frameId === this.targetId) this.setTopUrl(p.request.url);
     const rule = answer(this.conn, this.rules, p, sessionId, { mainFrame: sessionId ? undefined : this.targetId, topSite: this.topSite });
     if (!rule || sessionId || !p.networkId) return;
     const mark = rule.mode === 'empty' ? `${rule.label ?? rule.pattern}, answered empty` : rule.label ?? rule.pattern;
@@ -265,7 +287,8 @@ function answer(conn: CdpConnection, rules: BlockRule[], p: any, sessionId?: str
   // (예: 세션 녹화를 막은 채 contentsquare.com을 직접 열어도 그 사이트는 멀쩡히 보이게)
   const top = p.resourceType === 'Document' && !!ctx.mainFrame && p.frameId === ctx.mainFrame;
   const own = !!ctx.topSite && siteOfUrl(p.request.url) === ctx.topSite;
-  const rule = rules.find((r) => !(top && r.label) && !(own && r.thirdParty) && wildcard(r.pattern).test(p.request.url));
+  const sending = p.request.method !== 'GET' && p.request.method !== 'HEAD';
+  const rule = rules.find((r) => !(top && r.label) && !(own && r.thirdParty) && !(r.postOnly && !sending) && wildcard(r.pattern).test(p.request.url));
   const send = (m: string, params: Record<string, unknown>) => void conn.send(m, params, 5000, sessionId).catch(() => undefined);
   if (!rule) send('Fetch.continueRequest', { requestId: p.requestId });
   else if (rule.mode !== 'empty') send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'BlockedByClient' });
@@ -277,7 +300,9 @@ function answer(conn: CdpConnection, rules: BlockRule[], p: any, sessionId?: str
       ...(origin ? [{ name: 'Access-Control-Allow-Origin', value: origin }, { name: 'Access-Control-Allow-Credentials', value: 'true' }, { name: 'Vary', value: 'Origin' }] : []),
     ];
     const status = p.resourceType === 'Ping' ? 204 : 200;
-    send('Fetch.fulfillRequest', { requestId: p.requestId, responseCode: status, responseHeaders: headers, ...(status === 200 && p.resourceType === 'Image' ? { body: GIF } : {}) });
+    // 이미지는 1x1 GIF, fetch/XHR은 빈 JSON({}) (페이지가 res.json()을 불러도 오류가 나지 않게)
+    const body = status !== 200 ? undefined : p.resourceType === 'Image' ? GIF : p.resourceType === 'XHR' || p.resourceType === 'Fetch' ? 'e30=' : undefined;
+    send('Fetch.fulfillRequest', { requestId: p.requestId, responseCode: status, responseHeaders: headers, ...(body ? { body } : {}) });
   }
   return rule;
 }
@@ -294,14 +319,23 @@ function slotRules(slot: number): BlockRule[] {
   return [...seen.values()];
 }
 
-async function syncSharedWorkers(slot: number) {
+// 같은 슬롯의 동기화는 하나씩 (두 탭이 동시에 규칙을 바꿔도 지킴이가 둘 생기지 않게)
+const syncing = new Map<number, Promise<void>>();
+function syncSharedWorkers(slot: number): Promise<void> {
+  const next = (syncing.get(slot) ?? Promise.resolve()).then(() => syncSharedWorkersNow(slot)).catch(() => undefined);
+  syncing.set(slot, next);
+  void next.finally(() => { if (syncing.get(slot) === next) syncing.delete(slot); });
+  return next;
+}
+
+async function syncSharedWorkersNow(slot: number) {
   if (!browserOf) return;
   const rules = slotRules(slot);
   let g = guards.get(slot);
   if (!rules.length && !g) return;
   const conn = await browserOf(slot).catch(() => undefined);
   if (!conn) return;
-  if (g && g.conn !== conn) { guards.delete(slot); g = undefined; }
+  if (g && (g.conn !== conn || g.conn.closed)) { for (const off of g.offs) off(); guards.delete(slot); g = undefined; }
   const apply = async (sid: string) => {
     const send = (m: string, p: Record<string, unknown> = {}) => conn.send(m, p, 5000, sid).catch(() => undefined);
     // Fetch만 켠다 (실험: 공유 워커에서 Network.enable을 먼저 켜면 Fetch 가로채기가 걸리지 않는다)
@@ -331,7 +365,8 @@ async function syncSharedWorkers(slot: number) {
     await conn.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{ type: 'shared_worker', exclude: false }, { exclude: true }] }, 5000).catch(() => undefined);
     // 이미 돌고 있는 공유 워커에도 붙는다
     const { targetInfos = [] } = await conn.send<{ targetInfos: { targetId: string; type: string; attached: boolean }[] }>('Target.getTargets', {}, 5000).catch(() => ({ targetInfos: [] }));
-    for (const t of targetInfos.filter((x) => x.type === 'shared_worker')) {
+    // 이미 이 지킴이가 붙은 워커는 다시 붙지 않는다 (붙을 때마다 세션이 하나씩 늘어 요청을 여러 번 가로채게 된다)
+    for (const t of targetInfos.filter((x) => x.type === 'shared_worker' && !x.attached)) {
       const r = await conn.send<{ sessionId: string }>('Target.attachToTarget', { targetId: t.targetId, flatten: true }, 5000).catch(() => undefined);
       if (r && !g.sessions.has(r.sessionId)) { g.sessions.add(r.sessionId); await apply(r.sessionId); }
     }
@@ -349,7 +384,18 @@ async function syncSharedWorkers(slot: number) {
 }
 
 /** Fetch 패턴과 같은 규칙: * 는 아무 글자 여러 개, ? 는 한 글자. */
+const wildcardCache = new Map<string, RegExp>();
+/** 같은 패턴은 한 번만 정규식으로 바꾼다 (요청마다 수백 개를 새로 만들지 않게) */
 export function wildcard(pattern: string): RegExp {
+  let r = wildcardCache.get(pattern);
+  if (r) return r;
+  if (wildcardCache.size > 2000) wildcardCache.clear();
+  r = wildcardOf(pattern);
+  wildcardCache.set(pattern, r);
+  return r;
+}
+
+function wildcardOf(pattern: string): RegExp {
   const esc = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
   return new RegExp(`^${esc}$`, 'i');
 }

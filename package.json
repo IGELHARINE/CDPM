@@ -1,6 +1,6 @@
 {
   "name": "cdpm-mcp",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "mcpName": "io.github.IGELHARINE/cdpm",
   "description": "CDP Manager - an MCP server that runs numbered Chrome (or other Chromium) slots 1-99 over CDP so multiple Claude agents can share them, with a live watch screen and bot-detection/telemetry signals",
   "type": "module",

@@ -86,9 +86,10 @@ async function main(argv: string[]) {
     case 'launch': {
       const headless = rest.includes('--headless');
       const bi = rest.indexOf('--browser');
-      const browser = bi >= 0 ? rest[bi + 1] : undefined;
-      if (bi >= 0 && !browser) throw new CdpmError('브라우저 이름을 적어 주세요. 예: cdpm launch 2 --browser brave');
-      if (browser) (await import('./chrome/finder.js')).browserKey(browser);   // 크로미움 계열이 아니면 여기서 오류
+      const raw = bi >= 0 ? rest[bi + 1] : undefined;
+      if (bi >= 0 && !raw) throw new CdpmError('브라우저 이름을 적어 주세요. 예: cdpm launch 2 --browser brave');
+      // 크로미움 계열이 아니면 여기서 오류. 대소문자 등을 표준 이름으로 맞춘다 ("Chrome" → chrome: 다른 프로필로 켜지지 않게)
+      const browser = raw ? (await import('./chrome/finder.js')).browserKey(raw) : undefined;
       const slotArgs = rest.filter((a, i) => a !== '--headless' && i !== bi && i !== bi + 1);
       const { launchSlot, firstFreeSlot } = await lazy.service();
       let slots = slotsFrom(slotArgs);

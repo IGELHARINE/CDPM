@@ -9,7 +9,9 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { CdpConnection } from '../cdp/client.js';
-import { listPages, probe, type PageTarget } from '../cdp/targets.js';
+import { listPages, listPagesAndPrints, probe, type PageTarget } from '../cdp/targets.js';
+import { bubbleDetail, hostsOf, permissionBubbles, type BubbleDetail } from '../chrome/bubbles.js';
+import { macPermissionBubbles, stopMacBubbles } from '../chrome/mac-bubbles.js';
 import { cdpmHome, paths } from '../paths.js';
 import { pauseSlots, resumeSlots } from '../pause.js';
 import { sendMessage, type Message } from '../registry/messages.js';
@@ -57,6 +59,17 @@ interface TabState {
   settleAt?: number[];
   /** 기다리는 중인 이 탭의 확인 루프를 바로 깨운다 */
   wake?: () => void;
+  /** 이 탭의 확인 루프가 지금 돌고 있는지 (같은 탭에 루프가 둘 생기지 않게) */
+  running?: boolean;
+  /** 제목만 바뀐 숨은 탭: 다시 찍을지 (제목이 계속 바뀌는 사이트에서 숨은 탭을 계속 그리게 하지 않도록 30초에 한 번까지) */
+  titleDirty?: boolean;
+  titleShotAt?: number;
+  /** 숨은 탭 찍기가 실패한 때 (실패하면 잠시 쉬었다 다시 한다) */
+  failAt?: number;
+  /** 페이지가 띄운 알림창(alert·confirm·prompt·떠나기 확인). 떠 있는 동안 탭이 멈춰 화면을 찍을 수 없다 */
+  dialog?: { type: string; message: string; defaultPrompt?: string };
+  /** 붙을 때 탭이 답하지 않음 (이미 알림창이 떠 있거나 무거운 작업 중) */
+  unresponsive?: boolean;
 }
 
 interface TabInfo {
@@ -72,6 +85,10 @@ interface TabInfo {
   openedBy?: string;
   last?: { agent: string; action: string; at: string };
   summary?: string;
+  /** 탭을 멈추게 하는 것: 알림창, 응답 없음. print는 이 칸이 인쇄 창이라는 뜻 */
+  dialog?: { type: string; message: string; defaultPrompt?: string };
+  print?: boolean;
+  unresponsive?: boolean;
 }
 
 interface SlotInfo {
@@ -84,6 +101,8 @@ interface SlotInfo {
   /** Chrome이 아닌 브라우저로 켠 슬롯이면 그 이름 (brave 등) */
   browser?: string;
   tabs: TabInfo[];
+  /** 그 슬롯 창에 떠 있는 Chrome 권한 요청 말풍선 (Windows 창 모드만). 어느 탭 것인지는 확실히 알 수 없어 슬롯에 따로 한 칸으로 보여 준다 */
+  bubbles?: { key: string; title: string; texts?: string[]; buttons?: string[] }[];
 }
 
 interface Activity { at: string; slot: number; tab?: string; who: string; what: string; title?: string }
@@ -110,7 +129,9 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
   };
   const wants = (c: Client, slot: number) => c.slots === 'all' || c.slots.has(slot);
   // 보고 있는 사람이 있는 슬롯만 화면을 받는다 (관제 화면이 가려져 있으면 그 사람은 안 보는 것으로 친다)
-  const anyWants = (slot: number) => [...clients].some((c) => !c.idle && wants(c, slot) && !c.skip?.has(slot));
+  // 그 슬롯을 지금 실제로 보는 사람 (관제 화면이 가려져 있거나 그 슬롯을 접어 둔 사람은 빼고)
+  const sees = (c: Client, slot: number) => !c.idle && wants(c, slot) && !c.skip?.has(slot);
+  const anyWants = (slot: number) => [...clients].some((c) => sees(c, slot));
   // 활동 기록은 관제 화면에서 더 보여 주지 않는다 → 보내지 않고 최근 것만 조금 남긴다 (나중에 쓸 때를 위해)
   const note = (a: Activity) => { activity.push(a); if (activity.length > 200) activity.shift(); };
 
@@ -123,7 +144,7 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
     const hash = createHash('md5').update(data).digest('hex');
     if (hash === t.lastHash) { t.same++; return; }
     t.lastHash = hash; t.same = 0; t.last = data;
-    push('frame', { slot, id: t.targetId, data }, (c) => wants(c, slot));
+    push('frame', { slot, id: t.targetId, data }, (c) => sees(c, slot));
   };
   /** 슬롯 안에서 앞 탭이 바뀐 것 같을 때: 그 슬롯 탭들의 보임 상태를 바로 다시 보고, 상태를 곧 보낸다 */
   const wakeSlot = (slot: number) => {
@@ -134,6 +155,9 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
   const soonScan = () => { if (!soonTimer) soonTimer = setTimeout(() => { soonTimer = undefined; void scan(); }, 120); };
   /** 슬롯마다 마지막으로 앞에 있던 탭 (창이 최소화·가려지면 이 탭에 별표를 둔다) */
   const lastFront = new Map<number, string>();
+  /** 권한 요청 말풍선의 글·버튼 (말풍선마다 한 번만 읽는다) */
+  const bubbleInfo = new Map<string, BubbleDetail>();
+  const bubbleReading = new Set<string>();
   const focused = (slot: number, t: TabState) => [...clients].some((c) => c.focus === `${slot}:${t.targetId}`);
 
   async function watchTab(slot: number, t: TabState, wsUrl: string) {
@@ -141,6 +165,7 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
       t.conn = await CdpConnection.connect(wsUrl, 5000);
     } catch {
       t.watching = false;
+      t.running = false;
       return;
     }
     const conn = t.conn;
@@ -150,6 +175,13 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
       t.castAt = Date.now();
       if (t.watching) deliver(slot, t, p.data);
     });
+    // 알림창: Page를 켜 둔 연결에만 알려 준다. 이미 떠 있을 때 붙으면 Page.enable이 알림창이 닫힐 때까지 답하지 않는다
+    // → 잠깐 기다려 답이 없으면 "응답 없음"으로 표시하고, 나중에 답이 오면 푼다.
+    const changed = () => { lastState = ''; soonScan(); };
+    conn.on('Page.javascriptDialogOpening', (p: { type: string; message: string; defaultPrompt?: string }) => { t.dialog = { type: p.type, message: p.message, ...(p.defaultPrompt ? { defaultPrompt: p.defaultPrompt } : {}) }; t.unresponsive = false; changed(); });
+    conn.on('Page.javascriptDialogClosed', () => { t.dialog = undefined; t.dirty = true; changed(); t.wake?.(); });
+    const enabled = conn.send('Page.enable', {}, 600_000).then(() => { if (t.unresponsive) { t.unresponsive = false; t.dirty = true; changed(); } }, () => undefined);
+    if (!(await Promise.race([enabled.then(() => true), sleep(1500).then(() => false)]))) { t.unresponsive = true; changed(); }
     // 녹화 중인(앞에 있던) 탭이 가려지거나 다시 보이면 Chrome이 바로 알려 준다 → 같은 슬롯의 다른 탭들도 곧바로 다시 본다
     conn.on('Page.screencastVisibilityChanged', () => wakeSlot(slot));
     const castOff = async () => { if (t.casting) { t.casting = undefined; await conn.send('Page.stopScreencast', {}, 3000).catch(() => undefined); } };
@@ -173,10 +205,16 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
     const shoot = async (big: boolean) => {
       t.shotAt = Date.now();
       const shot = await conn.send<{ data: string }>('Page.captureScreenshot', { format: 'jpeg', quality: big ? 60 : 40 }, 5000).catch(() => undefined);
-      if (shot?.data) deliver(slot, t, shot.data);
+      if (shot?.data) { t.failAt = undefined; deliver(slot, t, shot.data); } else t.failAt = Date.now();
     };
     while (t.watching && !conn.closed) {
       const began = Date.now();
+      // 알림창이 떠 있거나 탭이 답하지 않으면 찍기·보임 확인이 다 멈춰 기다리므로 건너뛴다 (닫히면 깨운다)
+      if (t.dialog || t.unresponsive) {
+        await new Promise<void>((r) => { const tm = setTimeout(r, SLOW_MS); t.wake = () => { clearTimeout(tm); r(); }; });
+        t.wake = undefined;
+        continue;
+      }
       const big = focused(slot, t);
       const hidden = (await visibility()) === 'hidden';
       if (hidden !== t.hidden) { const was = t.hidden; t.hidden = hidden; lastState = ''; if (was !== undefined) wakeSlot(slot); }
@@ -186,7 +224,11 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
         // 그래서 계속 찍지 않고, 처음 볼 때·주소나 제목이 바뀌었을 때·에이전트가 조작했을 때(그리고 그 뒤 몇 번 더)만 찍는다.
         // 사용자가 크게 보고 있는 탭만 계속 찍는다 (그 탭은 사람이 직접 지켜보겠다고 고른 것).
         // 뒤에서 연 탭은 Chrome이 늦게 그리므로(다른 슬롯에서 옮겨 온 탭, 에이전트가 뒤에서 연 탭) 바뀐 뒤 3초·10초·30초에 한 장씩 더 찍는다.
-        if (big || !t.last || t.dirty) {
+        // 제목만 바뀐 것은 30초에 한 번까지만 찍는다 (시계·알림 수처럼 제목이 계속 바뀌는 사이트)
+        if (t.titleDirty && Date.now() - (t.titleShotAt ?? 0) > 30_000) { t.titleDirty = false; t.titleShotAt = Date.now(); t.dirty = true; }
+        // 처음 찍기가 실패했으면(창이 최소화되어 있는 등) 10초 쉬었다 다시 한다
+        const firstDue = !t.last && Date.now() - (t.failAt ?? 0) > 10_000;
+        if (big || firstDue || t.dirty) {
           if (t.dirty || !t.last) t.settleAt = [3000, 10_000, 30_000].map((ms) => Date.now() + ms);
           t.dirty = false;
           await shoot(big);
@@ -205,7 +247,9 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
         // 녹화 스트림은 화면이 바뀔 때만 그림을 준다. 가만히 있는 페이지, 다른 창에 가려진 창, 창 없이 켠 슬롯은
         // 한 장도 안 올 수 있어서(칸이 검게 남는다), 스트림이 조용하면 가끔 직접 한 장 찍는다. 같은 그림이면 보내지 않는다.
         const now = Date.now();
-        if (now - (t.castAt ?? 0) > SLOW_MS && now - (t.shotAt ?? 0) > (t.last ? SLOW_MS : 0)) {
+        // 같은 그림이 계속 나오면(가만히 있는 페이지) 6초에 한 번으로 늦춘다
+        const every = t.same >= 5 ? SLOW_MS * 2 : SLOW_MS;
+        if (now - (t.castAt ?? 0) > SLOW_MS && now - (t.shotAt ?? 0) > (t.last ? every : 0)) {
           t.shotAt = now;
           const shot = await conn.send<{ data: string }>('Page.captureScreenshot', { format: 'jpeg', quality: big ? 60 : 40 }, 5000).catch(() => undefined);
           if (shot?.data && Date.now() - (t.castAt ?? 0) > SLOW_MS) deliver(slot, t, shot.data);
@@ -219,7 +263,10 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
     }
     await castOff();
     conn.close();
-    t.conn = undefined;
+    if (t.conn === conn) t.conn = undefined;
+    // 연결이 끊겨 끝났으면 다음 훑기에서 다시 붙도록 표시를 푼다
+    t.watching = false;
+    t.running = false;
   }
 
   // ── 슬롯·탭 목록, 활동, 메시지 ──
@@ -240,24 +287,31 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
     const live = new Set<string>();
     await Promise.all([...nums].sort((a, b) => a - b).map(async (no) => {
       const rec = reg.slots[String(no)];
-      let pages: PageTarget[] | undefined;
+      let pages: PageTarget[] | undefined, prints: PageTarget[] = [];
       try {
-        pages = await listPages(no, 2500);
+        ({ pages, prints } = await listPagesAndPrints(no, 2500));
       } catch {
         pages = undefined;
       }
       const info: SlotInfo = { no, color: colorOf(no), running: !!pages, headless: rec?.headless, paused: rec?.paused, proxy: !!rec?.proxy, ...(rec?.browser ? { browser: rec.browser } : {}), tabs: [] };
-      for (const p of pages ?? []) {
+      // 인쇄 창은 탭이 아니라 따로 잡히는 대상이다 (어느 탭 것인지 Chrome이 알려 주지 않는다). 따로 한 칸으로 보여 준다
+      const printIds = new Set(prints.map((x) => x.id));
+      for (const p of [...(pages ?? []), ...(pages ? prints : [])]) {
         if (new RegExp(`^https?://(127\\.0\\.0\\.1|localhost|\\[::1\\]):${port}(/|$)`).test(p.url)) continue; // 관제 화면 자신 (어느 슬롯에 띄워도 자기 자신은 관제에서 뺀다)
         const key = `${no}:${p.id}`;
         live.add(key);
         const tr = rec?.tabs[p.id];
         let t = tabs.get(key);
         if (!t) tabs.set(key, (t = { targetId: p.id, watching: false, lastHash: '', same: 0 }));
-        if (t.seenUrl !== p.url || t.seenTitle !== p.title) { if (t.seenUrl !== undefined) t.dirty = true; t.seenUrl = p.url; t.seenTitle = p.title; }
-        if (anyWants(no) && !t.watching) { t.watching = true; void watchTab(no, t, p.webSocketDebuggerUrl ?? `ws://127.0.0.1:${portOf(no)}/devtools/page/${p.id}`); }
-        if (!anyWants(no)) t.watching = false;
-        info.tabs.push({ targetId: p.id, id: tr?.id ?? '', seq: tr?.seq ?? Number.MAX_SAFE_INTEGER, title: p.title, url: p.url, hidden: t.hidden, openedBy: tr?.openedBy, last: tr?.last && { agent: tr.last.agent, action: tr.last.action, at: tr.last.at }, summary: tr?.summary?.text });
+        if (t.seenUrl !== undefined && t.seenUrl !== p.url) t.dirty = true;
+        else if (t.seenTitle !== undefined && t.seenTitle !== p.title) t.titleDirty = true;
+        t.seenUrl = p.url; t.seenTitle = p.title;
+        if (anyWants(no)) {
+          t.watching = true;
+          // 루프가 이미 돌고 있으면(잠깐 안 보다가 다시 본 경우) 새로 만들지 않는다
+          if (!t.running) { t.running = true; void watchTab(no, t, p.webSocketDebuggerUrl ?? `ws://127.0.0.1:${portOf(no)}/devtools/page/${p.id}`).catch(() => undefined).finally(() => { t.running = false; }); }
+        } else if (t.watching) { t.watching = false; t.wake?.(); }
+        info.tabs.push({ targetId: p.id, id: tr?.id ?? '', seq: tr?.seq ?? Number.MAX_SAFE_INTEGER, title: p.title, url: p.url, hidden: t.hidden, openedBy: tr?.openedBy, last: tr?.last && { agent: tr.last.agent, action: tr.last.action, at: tr.last.at }, summary: tr?.summary?.text, ...(printIds.has(p.id) ? { print: true } : {}), ...(t.dialog ? { dialog: t.dialog } : {}), ...(t.unresponsive ? { unresponsive: true } : {}) });
         // 활동 기록: 조작 시각이 바뀐 탭
         if (tr?.last && seenAction.get(key) !== tr.last.at) {
           // 에이전트가 이 탭을 조작했다 → 숨은 탭이어도 바뀐 화면을 찍는다 (주소·제목이 그대로인 조작: 입력·클릭·스크롤 등)
@@ -267,16 +321,34 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
         }
         if (known.size && !known.has(key)) note({ at: new Date().toISOString(), slot: no, tab: tr?.id, who: tr?.openedBy ?? '', what: 'new tab', title: p.title || p.url });
       }
+      // Chrome 권한 요청 말풍선 ("이 기기의 다른 앱 및 서비스에 액세스" 등, Windows 창 모드만).
+      // 같은 사이트 탭이 여럿이면(팝업 등) 어느 탭 것인지 맞출 수 없어서(실측) 탭에 붙이지 않고 슬롯에 따로 한 칸으로 보여 준다
+      if (pages && !rec?.headless) for (const b of permissionBubbles(no, hostsOf(info.tabs.map((x) => x.url)))) {
+        const d = bubbleInfo.get(b.key);
+        (info.bubbles ??= []).push({ key: b.key, title: b.title, ...(d ? { texts: d.texts, buttons: d.buttons } : {}) });
+        // 말풍선 안의 글은 한 번만 읽는다 (PowerShell, 약 0.6초). 다 읽으면 다시 보낸다
+        if (!d && !bubbleReading.has(b.key)) { bubbleReading.add(b.key); void bubbleDetail(b).then((x) => { bubbleReading.delete(b.key); if (x) { if (bubbleInfo.size > 50) bubbleInfo.clear(); bubbleInfo.set(b.key, x); lastState = ''; soonScan(); } }); }
+      }
       // Chrome이 주는 순서는 "최근에 앞에 있던 순"이라 볼 때마다 바뀐다 → 탭 번호 순서로 고정한다
       info.tabs.sort((a, b) => a.seq - b.seq);
-      const visible = info.tabs.filter((x) => x.hidden === false);
+      const visible = info.tabs.filter((x) => x.hidden === false && !x.print);
       if (visible.length) { for (const x of visible) x.front = true; lastFront.set(no, visible[0].targetId); }
       else { const keep = info.tabs.find((x) => x.targetId === lastFront.get(no)); if (keep) keep.front = true; }
       out.push(info);
     }));
+    // macOS: 권한 요청 말풍선은 접근성으로 읽는다 (창 모드 슬롯 전부를 한 번에). Windows는 위에서 슬롯마다 창 제목으로 찾는다
+    if (process.platform === 'darwin') {
+      const bySlot = new Map<number, SlotInfo>();
+      for (const info of out) { const pid = reg.slots[String(info.no)]?.pid; if (pid && info.running && !info.headless) bySlot.set(pid, info); }
+      if (bySlot.size) {
+        const found = await macPermissionBubbles([...bySlot.keys()], (pid) => hostsOf(bySlot.get(pid)!.tabs.map((x) => x.url))).catch(() => []);
+        for (const b of found) (bySlot.get(b.pid)!.bubbles ??= []).push({ key: b.key, title: b.title, texts: b.texts, buttons: b.buttons });
+      }
+    }
     for (const [key, t] of tabs) {
       if (live.has(key)) continue;
       t.watching = false;
+      t.wake?.();
       tabs.delete(key);
       seenAction.delete(key);
       if (known.has(key)) note({ at: new Date().toISOString(), slot: Number(key.split(':')[0]), who: '', what: 'tab closed' });
@@ -359,12 +431,14 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
       await sendMessage(slot, WATCH_AGENT, `The user closed slot ${slot} (its whole browser) with the watch screen. Its tabs are gone; don't use this slot unless the user launches it again.`, null).catch(() => undefined);
       let forced = false;
       await withSlotLock(slot, async () => {
-        const rec = readRegistry().slots[String(slot)];
         const b = await browserOf(slot).catch(() => undefined);
+        // 끝까지 안 꺼지면 강제로 끝낼 프로세스는 기록부의 번호가 아니라 그 브라우저에게 직접 물은 번호로 한다
+        // (재부팅 뒤 Windows가 옛 번호를 다른 프로그램에 다시 줬을 수 있다)
+        const pid = b ? (await b.send<{ processInfo: { type: string; id: number }[] }>('SystemInfo.getProcessInfo', {}, 3000).catch(() => undefined))?.processInfo.find((x) => x.type === 'browser')?.id : undefined;
         if (b) { await b.send('Browser.close', {}, 5000).catch(() => undefined); b.close(); }
         for (let i = 0; i < 25 && (await probe(slot, 500)).state === 'chrome'; i++) await sleep(200);
-        for (let i = 0; rec?.pid && i < 50 && pidAlive(rec.pid); i++) await sleep(100);
-        if (rec?.pid && pidAlive(rec.pid)) { try { process.kill(rec.pid); forced = true; } catch { /* 이미 끝남 */ } }
+        for (let i = 0; pid && i < 50 && pidAlive(pid); i++) await sleep(100);
+        if (pid && pidAlive(pid)) { try { process.kill(pid); forced = true; } catch { /* 이미 끝남 */ } }
         await forgetSlot(slot);
       });
       lastState = '';
@@ -396,7 +470,7 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
     if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(req.headers.host ?? '')) return json(403, { error: 'bad host' });
     if (url.pathname === '/ping') return json(200, { cdpmWatch: VERSION, pid: process.pid });
     if (url.pathname === '/') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY' });
       return res.end(watchPage(token));
     }
     const given = url.searchParams.get('token') ?? req.headers['x-cdpm-watch'];
@@ -419,6 +493,8 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
     if (req.method !== 'POST') return json(404, { error: 'not found' });
     try {
       const body = await readBody(req);
+      // 슬롯 번호는 1~99만 받는다 (표를 가진 쪽이라도 아무 포트에나 붙게 하지 않게)
+      for (const k of ['slot', 'from', 'to'] as const) if (k in body && !isValidSlot(Number((body as Record<string, unknown>)[k]))) return json(400, { ok: false, message: `Bad slot number (${k}).` });
       if (url.pathname === '/api/move') {
         const r = await moveTab(body as MoveRequest);
         if (r.status === 'moved') note({ at: new Date().toISOString(), slot: (body as MoveRequest).to, who: 'you', what: `moved from slot ${(body as MoveRequest).from}` });
@@ -437,6 +513,8 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
           c.w = Number(body.w) > 0 ? Math.min(4000, Number(body.w)) : undefined;
           c.bw = Number(body.bw) > 0 ? Math.min(4000, Number(body.bw)) : undefined;
           c.skip = new Set(Array.isArray(body.skip) ? body.skip.map(Number).filter(isValidSlot) : []);
+          // 가려져 있던 동안(또는 접어 둔 슬롯)은 화면을 보내지 않았으므로, 다시 보게 된 슬롯의 마지막 화면을 보내 준다
+          for (const [key, t] of tabs) { const slot = Number(key.split(':')[0]); if (t.last && sees(c, slot)) c.res.write(`event: frame\ndata: ${JSON.stringify({ slot, id: t.targetId, data: t.last })}\n\n`); }
           lastState = '';
           void scan();
         }
@@ -448,7 +526,7 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
     }
   });
 
-  let runningCheckedAt = 0, running = true;
+  let runningCheckedAt = 0, running = true, lastScanAt = 0;
   const slotsRunning = (): boolean => {
     if (Date.now() - runningCheckedAt < 30_000) return running;
     runningCheckedAt = Date.now();
@@ -462,12 +540,17 @@ export async function startWatchServer(wantPort = WATCH_PORT): Promise<{ port: n
     // 슬롯이 켜져 있는 동안은 끄지 않는다: 잠깐 다른 화면을 보다 돌아왔을 때 관제 주소가 안 열리면 안 되니까.
     if (clients.size || slotsRunning()) idleSince = Date.now();
     else if (Date.now() - idleSince > IDLE_EXIT_MS) close();
+    // 아무도 안 보면 훑지 않는다. 다들 관제 화면을 가려 둔 동안은 5초에 한 번만
+    const allIdle = [...clients].every((c) => c.idle);
+    if (!clients.size || (allIdle && Date.now() - lastScanAt < 5000)) return;
+    lastScanAt = Date.now();
     void scan().catch(() => undefined);
   }, SCAN_MS);
   fs.mkdirSync(cdpmHome(), { recursive: true });
   fs.writeFileSync(watchInfoFile(), JSON.stringify({ pid: process.pid, port, startedAt: new Date().toISOString() }));
   function close(exit = true) {
     clearInterval(timer);
+    stopMacBubbles();
     for (const t of tabs.values()) t.watching = false;
     for (const c of clients) c.res.end();
     server.close();

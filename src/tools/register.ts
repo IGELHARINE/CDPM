@@ -180,7 +180,7 @@ async function header(slot: number, agent: string, tabs: TabView[], opts: { exec
   }
   // 탭 몇 개만 달라졌으면(제목이 바뀜, 남이 한 탭을 건드림 등) 그 탭 줄만 보여 준다: 탭이 많을수록 호출마다 읽는 양이 크게 준다
   let only: Set<string> | undefined;
-  if (opts.compact && sameSet && tabs.length > 3 && changed.length <= tabs.length / 2) {
+  if (opts.compact && sameSet && tabs.length > 1 && changed.length < tabs.length) {
     only = new Set(changed.map((t) => t.targetId));
     if (opts.executed) only.add(opts.executed);
     for (const t of tabs) if (dialogs.has(t.targetId)) only.add(t.targetId);
@@ -248,7 +248,11 @@ async function onTab(args: TabCall, kind: TabKind, action: string | null, fn: (s
           r.text += g.note;
         } else r = await fn(session, tab, agent);
         // 페이지에서 읽어 온 글이라는 표시 (사이트가 쓴 글을 지시로 받아들이지 않게)
-        if (opts.page) r.text = fencePage(r.text);
+        // 페이지 글만 가두고, CDPM이 붙인 쪽 안내(— page 2/5 … / — "찾은 말": n match(es))는 가둔 바깥에 둔다 (CDPM 안내까지 "참고만 할 글"로 보이지 않게)
+        if (opts.page) {
+          const m = /\n\n— (?:page \d+\/\d+|"[^\n]*": \d+ match)[^\n]*$/.exec(r.text);
+          r.text = m ? fencePage(r.text.slice(0, m.index)) + r.text.slice(m.index) : fencePage(r.text);
+        }
         // read 옵션: 조작 결과에 바뀐 화면을 바로 붙인다 (같은 줄 세우기 안에서, 다른 조작이 끼어들기 전에)
         if (args.read && kind === 'action') r.text += await readAfter(session, agent, args.read);
         return r;
@@ -317,7 +321,7 @@ function fmtSize(n?: number) {
 
 function netLine(e: NetEntry, rules: BlockRule[] = []): string {
   // CDPM이 막은 요청은 막을 때 표시해 둔다. 표시가 없는데 BLOCKED_BY_CLIENT면 브라우저 자체(Brave 실드 등)나 확장 프로그램이 막은 것이다.
-  const ours = e.failed && /BLOCKED_BY_CLIENT/.test(e.failed) ? rules.find((r) => r.mode !== 'empty' && wildcard(r.pattern).test(e.url)) : undefined;
+  const ours = !e.blockedBy && e.failed && /BLOCKED_BY_CLIENT/.test(e.failed) ? rules.find((r) => r.mode !== 'empty' && wildcard(r.pattern).test(e.url)) : undefined;
   const blockedBy = e.blockedBy ?? (ours ? ours.label ?? ours.pattern : e.failed && /BLOCKED_BY_CLIENT/.test(e.failed) ? 'by the browser itself (e.g. Brave Shields) or an extension, not CDPM' : undefined);
   const status = e.failed
     ? `failed ${e.failed}${blockedBy ? ` (blocked: ${blockedBy})` : ''}`
@@ -617,10 +621,13 @@ export function registerTools(server: McpServer) {
     // 2쪽부터는 1쪽을 찍은 그 스냅샷에서 이어 보여준다 (ref 번호 유지).
     const full = page > 1 && cache && sameUrl && Date.now() - cache.at < 5 * 60_000 ? cache.text : (await takeSnapshot(s, agent)).text;
     // interactive: ref가 붙은 줄(조작할 수 있는 요소와 제목)만 → 큰 페이지에서도 몇 쪽 안에 입력칸·버튼이 다 보인다
-    const text = args.interactive ? full.split('\n').filter((l) => /\[e\d+\]/.test(l)).map((l) => l.trimStart()).join('\n') : full;
+    const onlyRefs = (t: string) => t.split('\n').filter((l) => /\[e\d+\]/.test(l)).map((l) => l.trimStart()).join('\n');
+    const text = args.interactive ? onlyRefs(full) : full;
     if (!text) return { text: '(no readable elements)' };
     if (args.ref) {
-      const sub = subtree(text, args.ref);
+      // 영역은 들여쓰기로 찾으므로 원래 스냅샷에서 자른 뒤에 interactive를 건다 (먼저 걸면 들여쓰기가 없어져 그 줄만 나온다)
+      const whole = subtree(full, args.ref);
+      const sub = whole && args.interactive ? onlyRefs(whole) : whole;
       if (!sub) throw new CdpmError(`[${args.ref}] not found in this snapshot. Re-snapshot without ref to check.`);
       const p = paginate(sub, page);
       return { text: p.body + pageFooter(p, sub.length) };
@@ -757,9 +764,13 @@ export function registerTools(server: McpServer) {
   }, async ({ slot, agent, timeout }) => guard(async () => {
     const me = agent ?? DEFAULT_AGENT;
     await attachSlot(slot);
-    const stop = () => (hasUnread(slot, me) ? 'Stopped waiting: a new message arrived (check with slot_inbox).' : undefined);
+    const stop = () => (hasUnread(slot, me) ? 'Stopped waiting: a new message arrived (below).' : undefined);
     try {
-      return textResult(await waitDownload(slot, timeout ?? 120, stop));
+      let text = await waitDownload(slot, timeout ?? 120, stop);
+      // 기다리다 멈춘 이유인 메시지를 여기서 바로 건넨다 (안 건네면 다시 부를 때마다 곧바로 멈춘다)
+      const msgs = hasUnread(slot, me) ? await takeUnread(slot, me).catch(() => []) : [];
+      if (msgs.length) text += `\n${msgs.length} new message(s) (${MESSAGE_NOTE})\n${formatMessages(msgs).map((l) => `  ${l}`).join('\n')}`;
+      return textResult(text);
     } catch (e) {
       throw new CdpmError((e as Error).message);
     }
@@ -816,6 +827,7 @@ export function registerTools(server: McpServer) {
         if (r.includes(act.VALUE_MISMATCH)) return stop(`Stopped: field ${i + 1} [${f.ref}] value differs from the intended text (not submitted). Check the value and retry.`);
       } catch (e) {
         // 알림창이 떠도 어디까지 채웠는지는 알려야 한다 (그냥 던지면 "Action done"만 남고 뒤 칸·제출을 건너뛴 것이 가려진다)
+        if (e instanceof act.PausedInterrupt) throw e;
         if (e instanceof act.DialogInterrupt) return stop(`Stopped at field ${i + 1} [${f.ref}]: ${e.message} Later fields${args.submit ? ' and submit' : ''} were skipped.`);
         return stop(`Stopped at field ${i + 1} [${f.ref}]: ${(e as Error).message}`);
       }
@@ -869,7 +881,7 @@ export function registerTools(server: McpServer) {
   server.registerTool('browser_wait', {
     title: 'Wait',
     description: 'Waits until text appears; gone: that text disappears; url: the URL changes; enabled: that button/input becomes enabled; ' +
-      'response: a network response for that URL completes (returns its body); network_idle: the network goes quiet; otherwise for seconds. ' +
+      'response: a network response for that URL completes (returns its body); network_idle: the network goes quiet; otherwise for seconds. Give one condition per call (timeout, not seconds, limits a condition). ' +
       'For SPAs (search results, lists, etc.), instead of reading the page, getting the data response (JSON) with response="/api/search" after a click is faster and more accurate (it searches from this agent\'s last action on that tab, so responses that arrived during the click are caught). ' +
       'Only reads, never touches the page, so the user\'s input is not lost (use it to detect login: url, gone="Password" or text="Inbox"). ' +
       'Returns as soon as the condition is met or another agent\'s message arrives. Keep waits minimal: long waits only for humans (login, etc.); to wait for other agents use slot_inbox wait.',
@@ -952,7 +964,7 @@ export function registerTools(server: McpServer) {
       filter: z.string().optional().describe('Only requests whose URL contains this'),
       type: z.string().optional().describe('Request type (e.g. XHR, Fetch, Document, Script, Image)'),
       failed: z.boolean().optional().describe('Failed requests only'),
-      limit: z.number().int().min(1).max(200).optional().describe('Max count (default 40, newest first)'),
+      limit: z.number().int().min(1).max(200).optional().describe('How many of the newest to show (default 40; listed oldest to newest)'),
       telemetry: z.boolean().optional().describe('Instead of the list: analysis of bot detection, blocks/challenges, session recording, analytics and other data-collection traffic seen on this tab'),
     },
   }, async (args) => onTab(args, 'view', null, async (s) => {
@@ -1011,19 +1023,21 @@ export function registerTools(server: McpServer) {
       const n = normalizePattern(p);
       const q = p.trim().toLowerCase();
       const labels = new Set([q, ...vendorsFor(p).map((v) => v.name.toLowerCase())]);
-      rules = rules.filter((r) => r.pattern !== n && r.pattern !== p.trim() && !(r.label && labels.has(r.label.toLowerCase())));
+      rules = rules.filter((r) => r.pattern !== n && r.pattern !== p.trim() && !(r.label && (labels.has(r.label.toLowerCase()) || (q === 'other' && r.label.startsWith('other: ')))));
     }
     const mode = args.quiet ? 'empty' as const : undefined;
-    const push = (pattern: string, label?: string, thirdParty?: boolean) => {
+    const push = (pattern: string, label?: string, extra: { thirdParty?: boolean; postOnly?: boolean } = {}) => {
       const old = rules.find((r) => r.pattern === pattern);
-      if (old) { if (mode) old.mode = mode; return; }
-      rules.push({ pattern, agent, at: nowIso(), ...(mode ? { mode } : {}), ...(label ? { label } : {}), ...(thirdParty ? { thirdParty } : {}) });
+      // 다시 걸면 quiet 여부를 이번 호출대로 바꾼다 (quiet로 건 것을 quiet 없이 다시 걸면 실패시키기로 돌아감)
+      if (old) { if (mode) old.mode = mode; else delete old.mode; return; }
+      rules.push({ pattern, agent, at: nowIso(), ...(mode ? { mode } : {}), ...(label ? { label } : {}), ...(extra.thirdParty ? { thirdParty: true } : {}), ...(extra.postOnly ? { postOnly: true } : {}) });
     };
     for (const p of args.add ?? []) push(normalizePattern(p));
     for (const q of args.signals ?? []) {
       if (q.trim().toLowerCase() === 'other') {
         const seen = s.network.telemetry.list().filter((x) => x.kind === 'other' && x.pattern);
-        for (const x of seen) push(x.pattern!, x.vendor);
+        // 이름 없는 수집 주소는 보내는 요청만 막는다 (같은 주소의 GET은 앱이 쓰는 것일 수 있어서)
+        for (const x of seen) push(x.pattern!, `other: ${x.vendor}`, { postOnly: true });
         notes.push(seen.length ? `other: ${seen.length} unnamed endpoint(s) seen on this tab` : 'other: none seen on this tab yet');
         continue;
       }
@@ -1032,11 +1046,13 @@ export function registerTools(server: McpServer) {
       for (const v of vs) {
         const pats = blockPatterns(v);
         if (!pats.length) { notes.push(`${v.name}: recognized by cookies or by a first-party path only, so it can't be blocked by address`); continue; }
-        for (const pt of pats) push(pt, v.name, !v.block);
+        for (const pt of pats) push(pt, v.name, { thirdParty: !v.block });
       }
     }
     const changed = args.clear || args.add?.length || args.signals?.length || args.remove?.length;
     if (changed) {
+      // 지금 띄운 페이지의 사이트를 알려 둔다 (업체 규칙이 그 사이트 자신의 요청을 막지 않게)
+      if (tab.url) s.network.setTopUrl(tab.url);
       await s.network.setRules(rules);
       await updateRegistry((r) => {
         const t = r.slots[String(s.slot)]?.tabs[tab.targetId];
@@ -1128,7 +1144,7 @@ const INSTRUCTIONS_CLAUDE_CODE = `CDPM: controls Chrome slots ${MIN_SLOT}-${MAX_
 - Outputs (reports, HTML, etc.) are written by each subagent for its share; main only merges (main writing everything alone is the slowest step).
 - The header at the top of each result shows the slot's tabs, which tab ran, warnings and new messages. Check it every time to decide the next step.
 - With multiple tabs, pass tab (number or ID "t7") to action tools. When several agents share a slot, open your own tab with browser_tab_new and use its ID. Background tabs can be read and operated as is.
-- Action tools (navigate, click, type, key, back, select, scroll, fill) accept read, which appends the page after the action. If the next decision needs the page, use read instead of a separate read call: text for articles, snapshot when you need buttons/links to click, changes to see only what changed on the same page (shortest).
+- Action tools (navigate, click, type, key, back, forward, reload, select, scroll, fill, hover, drag, upload, dialog) accept read, which appends the page after the action. If the next decision needs the page, use read instead of a separate read call: text for articles, snapshot when you need buttons/links to click, changes to see only what changed on the same page (shortest).
 - Fill several inputs on one page (login, search filters, etc.) with one browser_fill. File attach: browser_upload (file input ref, or click the "attach" button first, then call without ref). Hover menus: browser_hover; drag/sliders: browser_drag; downloads: click the button, then browser_download_wait returns the saved file path.
 - browser_snapshot returns only page 1 (top) of long pages. Don't page through: to find inputs/buttons use interactive=true or find="title|subject" (| for alternatives); for text content use browser_text. A summary you leave is visible to other agents in browser_status.
 - Keep waits minimal. Never use fixed waits (seconds).

@@ -512,6 +512,21 @@ describe('텔레메트리 신호', async () => {
     for (const v of VENDORS) for (const p of blockPatterns(v)) assert.ok(wc(p) instanceof RegExp);
     assert.equal(describeRules([{ pattern: 'a', agent: 'x', label: 'Hotjar' }, { pattern: 'b', agent: 'x', label: 'Hotjar', mode: 'empty' }, { pattern: '*ads*', agent: 'y' }]), 'Hotjar [2 patterns] (x), *ads* (y)');
   });
+  it('알림은 지금 사이트에서 본 업체만, 이름 없는 수집은 다른 사이트로 보내는 것만', async () => {
+    const { TelemetryLog } = await import('../../src/cdp/telemetry.js');
+    const log = new TelemetryLog();
+    log.site = 'a.com';
+    log.onCookies(['_abck'], 1);
+    assert.match(log.takeNotice('a.com')!, /Akamai/);
+    log.site = 'b.com';
+    log.onRequest({ url: 'https://b.com/index.js', method: 'GET', at: 2 });
+    assert.equal(log.takeNotice('b.com'), undefined, 'a.com에서 본 Akamai를 b.com 것으로 알림');
+    // 같은 사이트 앱 API(/api/events POST)는 수집으로 보지 않고, 다른 사이트로 보내면 본다
+    log.onRequest({ url: 'https://api.b.com/api/events', method: 'POST', at: 3 });
+    log.onRequest({ url: 'https://collector.example.net/v1/events', method: 'POST', at: 4 });
+    const other = log.list().filter((x) => x.kind === 'other').map((x) => x.vendor);
+    assert.deepEqual(other, ['collector.example.net/v1/events']);
+  });
   it('차단·확인 화면 응답', () => {
     assert.match(challengeOf(403, { 'cf-mitigated': 'challenge', server: 'cloudflare' })!, /Cloudflare/);
     assert.match(challengeOf(403, { 'X-DataDome': 'protected' })!, /DataDome/);

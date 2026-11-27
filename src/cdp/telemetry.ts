@@ -1,6 +1,7 @@
 // 탭의 네트워크 기록에서 봇 탐지·세션 녹화·분석(텔레메트리) 신호를 알아본다.
 // 이미 들어오는 네트워크 이벤트(요청 주소, 응답 머리글, 보낸 쿠키 이름)만 본다: 페이지에 아무것도 넣지 않고 Chrome에 명령도 더 보내지 않는다.
 // 결과는 에이전트가 사용자에게 알리는 데 쓴다 (봇 탐지·차단·세션 녹화는 처음 보일 때 한 번, 나머지는 browser_network telemetry로).
+import { siteOf } from '../watch/site.js';
 
 export type SignalKind = 'bot' | 'challenge' | 'replay' | 'analytics' | 'other';
 
@@ -23,7 +24,7 @@ const h = (...d: string[]) => d;
 export const VENDORS: Vendor[] = [
   // ── 봇 탐지·기기 지문·부정 거래 탐지 ──
   { name: 'Akamai Bot Manager', kind: 'bot', path: /^\/akam\/\d+\//, cookie: /^(_abck|bm_sz|bm_sv|ak_bmsc|bm_mi|bm_so|bm_lso)$/, block: ['*/akam/*'] },
-  { name: 'Cloudflare Bot Management', kind: 'bot', path: /^\/cdn-cgi\/challenge-platform\//, cookie: /^(__cf_bm|cf_clearance|__cflb|_cfuvid)$/, block: ['*/cdn-cgi/challenge-platform/*'] },
+  { name: 'Cloudflare Bot Management', kind: 'bot', path: /^\/cdn-cgi\/challenge-platform\//, cookie: /^(__cf_bm|cf_clearance)$/, block: ['*/cdn-cgi/challenge-platform/*'] },
   { name: 'Cloudflare Turnstile', kind: 'bot', hosts: h('challenges.cloudflare.com') },
   { name: 'PerimeterX / HUMAN', kind: 'bot', hosts: h('px-cdn.net', 'px-cloud.net', 'perimeterx.net', 'pxchk.net', 'px-client.net', 'humansecurity.com'), cookie: /^(_px\d?|_pxvid|_pxhd|pxcts|_pxff_.*|_pxde)$/ },
   { name: 'DataDome', kind: 'bot', hosts: h('datadome.co', 'captcha-delivery.com'), cookie: /^datadome$/ },
@@ -79,7 +80,7 @@ export const VENDORS: Vendor[] = [
   { name: 'Beusable', kind: 'replay', hosts: h('beusable.net') },
   { name: 'Datadog RUM', kind: 'replay', hosts: h('browser-intake-datadoghq.com', 'browser-intake-datadoghq.eu', 'browser-intake-us3-datadoghq.com', 'browser-intake-us5-datadoghq.com', 'browser-intake-ap1-datadoghq.com', 'browser-intake-ddog-gov.com', 'datadoghq-browser-agent.com') },
   { name: 'Dynatrace RUM', kind: 'replay', hosts: h('js-cdn.dynatrace.com') },
-  { name: 'Dynatrace RUM', kind: 'replay', path: /^\/rb_[a-z0-9]+/i, block: ['*/rb_*'] },
+  { name: 'Dynatrace RUM', kind: 'replay', path: /^\/rb_[0-9a-f]{8,}/i, block: [] },
   // ── 분석·광고·성능·오류 수집 ──
   { name: 'Google Analytics / Tag Manager', kind: 'analytics', hosts: h('google-analytics.com', 'googletagmanager.com', 'analytics.google.com', 'stats.g.doubleclick.net') },
   { name: 'Google Ads / DoubleClick', kind: 'analytics', hosts: h('doubleclick.net', 'googleadservices.com', 'googlesyndication.com', 'adservice.google.com') },
@@ -164,6 +165,8 @@ export interface Signal {
   lastAt: number;
   /** 이름 없는 수집 주소(other)를 막을 때 쓸 패턴 */
   pattern?: string;
+  /** 이 신호가 보인 페이지의 사이트들 (알림은 지금 사이트에서 본 것만) */
+  sites: Set<string>;
 }
 
 const MAX_SIGNALS = 120;
@@ -188,8 +191,24 @@ export function vendorOfUrl(url: string): Vendor | undefined {
   let u: URL;
   try { u = new URL(url); } catch { return undefined; }
   if (!/^(https?|wss?):$/.test(u.protocol)) return undefined;
-  const host = u.hostname.toLowerCase();
-  return VENDORS.find((v) => (v.hosts || v.path) && (!v.hosts || v.hosts.some((d) => hostIs(host, d))) && (!v.path || v.path.test(u.pathname)));
+  return vendorOf(u.hostname.toLowerCase(), u.pathname);
+}
+
+// 호스트 끝부분(도메인) → 그 도메인을 쓰는 업체들. 요청마다 120곳을 다 훑지 않고 호스트 조각 몇 개만 찾아본다
+const byDomain = new Map<string, Vendor[]>();
+const pathOnly: Vendor[] = [];
+for (const v of VENDORS) {
+  if (v.hosts) for (const d of v.hosts) byDomain.set(d, [...(byDomain.get(d) ?? []), v]);
+  else if (v.path) pathOnly.push(v);
+}
+
+function vendorOf(host: string, path: string): Vendor | undefined {
+  const parts = host.split('.');
+  for (let i = 0; i < parts.length - 1; i++) {
+    const hit = byDomain.get(parts.slice(i).join('.'))?.find((v) => !v.path || v.path.test(path));
+    if (hit) return hit;
+  }
+  return pathOnly.find((v) => v.path!.test(path));
 }
 
 /** 업체를 막을 Fetch 패턴 (주소로 막을 수 없는 업체는 빈 목록). */
@@ -242,6 +261,8 @@ export class TelemetryLog {
   private told = new Set<string>();
   /** 아직 알리지 않은 차단·확인 화면 */
   private pendingChallenges: string[] = [];
+  /** 탭에 지금 띄운 페이지의 사이트 (NetworkRecorder가 맨 위 문서를 볼 때 정한다) */
+  site = '';
 
   private hit(vendor: string, kind: SignalKind, at: number, host?: string, evidence?: string): Signal {
     let s = this.signals.get(vendor);
@@ -251,27 +272,32 @@ export class TelemetryLog {
         const oldest = [...this.signals.entries()].sort((a, b) => a[1].lastAt - b[1].lastAt)[0];
         this.signals.delete(oldest[0]);
       }
-      s = { vendor, kind, requests: 0, posts: 0, sentBytes: 0, hosts: new Set(), evidence: new Set(), firstAt: at, lastAt: at };
+      s = { vendor, kind, requests: 0, posts: 0, sentBytes: 0, hosts: new Set(), evidence: new Set(), firstAt: at, lastAt: at, sites: new Set() };
       this.signals.set(vendor, s);
     }
     s.lastAt = at;
+    if (this.site && s.sites.size < 20) s.sites.add(this.site);
     if (host && s.hosts.size < MAX_EVIDENCE) s.hosts.add(host);
     if (evidence && s.evidence.size < MAX_EVIDENCE) s.evidence.add(evidence);
     return s;
   }
 
   onRequest(p: { url: string; method: string; type?: string; postLen?: number; at: number }) {
-    const v = vendorOfUrl(p.url);
-    const x = hostPath(p.url);
+    let u: URL;
+    try { u = new URL(p.url); } catch { return; }
+    if (!/^(https?|wss?):$/.test(u.protocol)) return;
+    const host = u.hostname.toLowerCase();
+    const v = vendorOf(host, u.pathname);
     let s: Signal | undefined;
-    if (v) s = this.hit(v.name, v.kind, p.at, x?.host);
-    else if (x && (p.type === 'Ping' || (p.method === 'POST' && GENERIC.test(new URL(p.url).pathname)))) {
+    if (v) s = this.hit(v.name, v.kind, p.at, host);
+    // 이름 없는 수집 주소: sendBeacon이거나, 다른 사이트로 보내는 POST인데 경로가 수집처럼 생긴 것 (같은 사이트의 /api/events 같은 앱 API는 빼려고)
+    else if (/^https?:$/.test(u.protocol) && (p.type === 'Ping' || (p.method === 'POST' && GENERIC.test(u.pathname) && (!this.site || siteOf(host) !== this.site)))) {
       // 숫자·긴 해시가 든 경로 조각부터는 잘라 하나로 묶는다 (/rmkt/collect/8755…/ 여러 개 → /rmkt/collect/…)
-      const segs = new URL(p.url).pathname.split('/');
+      const segs = u.pathname.split('/');
       const cut = segs.findIndex((x, i) => i > 0 && /\d{4,}|[0-9a-f]{16,}/i.test(x));
       const pathKey = (cut > 0 ? `${segs.slice(0, cut).join('/')}/…` : segs.join('/')).slice(0, 60);
-      s = this.hit(`${x.host}${pathKey}`, 'other', p.at, x.host);
-      s.pattern ??= `*://${x.host}${pathKey.replace(/…$/, '')}*`;
+      s = this.hit(`${host}${pathKey}`, 'other', p.at, host);
+      s.pattern ??= `*://${host}${pathKey.replace(/…$/, '')}*`;
     }
     if (!s) return;
     s.requests++;
@@ -305,6 +331,8 @@ export class TelemetryLog {
     const challenges = this.pendingChallenges.splice(0);
     for (const s of this.list()) {
       if (s.kind !== 'bot' && s.kind !== 'replay') continue;
+      // 이 사이트를 띄운 동안 보인 것만 (예전에 다른 사이트에서 본 업체를 이 사이트 것으로 알리지 않게)
+      if (s.sites.size && !s.sites.has(site)) continue;
       const k = `${site}|${s.vendor}`;
       if (this.told.has(k)) continue;
       if (this.told.size > 2000) this.told.clear();

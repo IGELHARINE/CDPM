@@ -74,6 +74,8 @@ export class PageSession {
     readonly conn: CdpConnection,
   ) {
     this.network = new NetworkRecorder(conn, slot, targetId);
+    // 탭이 죽으면(렌더러 충돌) 이 연결을 버린다: 남겨 두면 명령마다 시간 제한까지 기다린다. 다음 호출 때 새로 붙는다
+    conn.on('Inspector.targetCrashed', () => conn.close());
     conn.on('Page.javascriptDialogOpening', (p) => {
       this.dialog = { type: p.type, message: p.message, at: new Date().toISOString() };
       this.watchLiveness();

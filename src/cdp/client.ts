@@ -156,6 +156,8 @@ export class CdpConnection {
       p.reject(new CdpmError(`CDP connection closed (${p.method}). The tab or Chrome may have closed.`));
     }
     this.pending.clear();
-    for (const h of this.closedHandlers) h();
+    for (const h of this.closedHandlers) {
+      try { h(); } catch { /* 한 곳의 오류가 나머지 정리를 막지 않게 */ }
+    }
   }
 }

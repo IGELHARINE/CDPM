@@ -261,7 +261,10 @@ export function ensureIconFile(slot: number): string {
   const file = path.join(dir, `${slot}-v${ICON_VERSION}.ico`);
   if (fs.existsSync(file)) return file;
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, buildIcon(slot));
+  // 다른 CDPM이 동시에 만들 수 있으므로 임시 파일에 쓰고 이름을 바꾼다 (반쯤 쓴 아이콘이 쓰이지 않게)
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, buildIcon(slot));
+  fs.renameSync(tmp, file);
   for (const name of fs.readdirSync(dir)) {
     if (name !== path.basename(file) && (name === `${slot}.ico` || name === `${slot}.ico.v` || new RegExp(`^${slot}-v\\d+\\.ico$`).test(name))) {
       fs.rmSync(path.join(dir, name), { force: true });

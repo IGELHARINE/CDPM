@@ -1,4 +1,5 @@
 // 슬롯 실행 보장, 탭 목록과 기록부 맞추기, 행동 기록.
+import { sendMessage } from './registry/messages.js';
 import { launchChrome, type LaunchOptions } from './chrome/launcher.js';
 import { describeProxy } from './chrome/proxy.js';
 import { installedChromeKey, installedChromeVersion, runningVersion } from './chrome/version.js';
@@ -126,7 +127,8 @@ async function launchSlotLocked(slot: number, agent: string, opts: LaunchOptions
   // 창이 뜨는 데 시간이 걸리므로 창이 나타날 때까지 적용을 시도 (창이 나타나는 것이 신호; 이후는 watcher가 맡음).
   // 헤드리스는 창이 없고, 아이콘을 붙일 수 없는 환경(Windows 외, koffi 없음)이면 기다릴 이유가 없다.
   for (let i = 0; !opts.headless && canApplyTaskbar(pid) && i < 50; i++) {
-    if (applyTaskbar(slot, pid) > 0) break;
+    // 아이콘을 못 붙여도(파일이 잠깐 잠김 등) 슬롯은 이미 켜졌다 → 켜기 실패로 알리지 않는다
+    try { if (applyTaskbar(slot, pid) > 0) break; } catch { break; }
     await sleep(100);
   }
   return { launched: true };
@@ -191,6 +193,9 @@ export async function restartIfUpdated(slot: number, browser?: string): Promise<
     const stale = p.state === 'chrome' ? staleVersion(p.version.Browser, readRegistry().slots[String(slot)]?.browser) : undefined;
     if (!stale) return false;
     const rec = readRegistry().slots[String(slot)];
+    // CDPM이 켜지 않은 브라우저(사용자가 그 포트로 직접 띄운 Edge·Brave 등, 또는 기록이 새로 만들어진 슬롯)는 끄지 않는다:
+    // 어떤 브라우저·프록시로 켰는지 몰라 일반 Chrome으로 다시 켜게 되고, 프록시 슬롯이면 실제 IP가 드러난다
+    if (!rec || rec.launchedBy === EXTERNAL) return false;
     // 사용자가 멈추고 직접 쓰는 슬롯은 다시 켜지 않는다 (입력하던 내용이 사라진다). 다시 시작한 뒤에 한다
     if (rec?.paused) {
       updateRestarted.delete(slot);
@@ -208,8 +213,20 @@ export async function restartIfUpdated(slot: number, browser?: string): Promise<
     for (let i = 0; i < 25 && (await probe(slot, 500)).state === 'chrome'; i++) await sleep(200);
     // 포트가 닫혀도 프로세스는 잠깐 더 살아 프로필을 붙잡는다. 끝날 때까지 기다려야 다시 켤 수 있다.
     for (let i = 0; rec?.pid && i < 50 && pidAlive(rec.pid); i++) await sleep(100);
+    // 옛 Chrome이 아직 포트를 열고 있으면 다시 켜지 않는다 (새 Chrome이 같은 프로필의 옛 것에 넘기고 끝나 버린다)
+    if ((await probe(slot, 1000)).state === 'chrome') {
+      await setNotice(slot, `Slot ${slot} Chrome was updated while running (${from}) and CDPM tried to restart it, but the old one did not close. Ask the user to close slot ${slot} and launch it again.`);
+      return false;
+    }
     await forgetSlot(slot);
-    const launched = await launchChrome(slot, { headless: rec?.headless, url: urls[0], browser: rec?.browser });
+    let launched: Awaited<ReturnType<typeof launchChrome>>;
+    try {
+      launched = await launchChrome(slot, { headless: rec?.headless, url: urls[0], browser: rec?.browser });
+    } catch (e) {
+      // 다시 켜지 못했으면 열려 있던 주소를 잃지 않게 알림으로 남긴다 (기록은 이미 지웠으므로 기록부 대신 메시지로)
+      await sendMessage(slot, 'cdpm', `Slot ${slot} was closed to restart on the updated Chrome (${from}), but it failed to start again: ${(e as Error).message}. Its tabs were: ${urls.join(' , ') || '(none)'}. Tell the user.`, null).catch(() => undefined);
+      throw e;
+    }
     const pid = launched.pid ?? (await browserPid(slot));
     if (pid) confirmedPid.set(slot, pid);
     const text = `Slot ${slot} Chrome had been updated while running (${from}), so new tabs could not load. CDPM restarted it on the new version` +
@@ -494,7 +511,8 @@ export async function liveSlots(): Promise<[number, SlotRecord][]> {
   if (dead.length) {
     for (const slot of dead) dropSlotConnections(slot);
     await updateRegistry((r) => {
-      for (const slot of dead) delete r.slots[String(slot)];
+      // 살펴보는 동안(몇 초) 다른 세션이 그 슬롯을 다시 켜 새 기록을 썼으면 지우지 않는다
+      for (const slot of dead) if (r.slots[String(slot)]?.launchedAt === reg.slots[String(slot)]?.launchedAt) delete r.slots[String(slot)];
     }).catch(() => undefined);
   }
   return out.sort((a, b) => a[0] - b[0]);

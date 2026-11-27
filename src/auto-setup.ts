@@ -115,7 +115,9 @@ export function autoSetupOnce(): string[] {
         break;
       } catch {
         const owner = Number(fs.readFileSync(lock, 'utf8'));
-        if (i > 0 || (owner && pidAlive(owner))) return [];
+        // 방금 만들어져 아직 번호를 못 쓴 잠금(0)은 살아 있는 것으로 본다 (그걸 지우면 둘이 같이 설정 파일을 고친다). 오래된 것만 정리
+        const fresh = Date.now() - fs.statSync(lock).mtimeMs < 10_000;
+        if (i > 0 || (owner ? pidAlive(owner) && Date.now() - fs.statSync(lock).mtimeMs < 15 * 60_000 : fresh)) return [];
         fs.unlinkSync(lock); // 하다가 죽은 CDPM이 남긴 잠금
       }
     }

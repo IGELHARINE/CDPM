@@ -936,7 +936,8 @@ describe('CDPM MCP 통합', { timeout: 180_000 }, () => {
   });
 
   it('창(탭)을 사용자가 다 닫으면 슬롯을 끝냄 (Windows·Linux. macOS는 Cmd+Q로만 끝남)', { skip: process.platform === 'darwin' }, async () => {
-    await call(a, 'browser_launch', { slot: 4, agent: 'A', headless: true });
+    // 창 있는 Chrome으로 본다: 창 없이(headless) 켠 Chrome은 탭을 다 닫아도 스스로 끝나지 않는다 (Chrome 155 실측). 사용자가 창을 닫는 상황은 창 모드다
+    await call(a, 'browser_launch', { slot: 4, agent: 'A', headless: false });
     const port = Number(ENV.CDPM_TEST_PORT_BASE) + 4;
     const pages = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()) as { id: string; type: string }[];
     for (const p of pages.filter((p) => p.type === 'page')) await fetch(`http://127.0.0.1:${port}/json/close/${p.id}`);

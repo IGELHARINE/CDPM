@@ -120,8 +120,23 @@ export function charKey(ch: string): { def: KeyDef; shift: boolean } {
   if (/^[A-Z]$/.test(ch)) return { def: { key: ch, code: `Key${ch}`, keyCode: ch.charCodeAt(0), text: ch }, shift: true };
   if (/^[a-z]$/.test(ch)) return { def: { key: ch, code: `Key${ch.toUpperCase()}`, keyCode: ch.toUpperCase().charCodeAt(0), text: ch }, shift: false };
   if (/^[0-9]$/.test(ch)) return { def: { key: ch, code: `Digit${ch}`, keyCode: ch.charCodeAt(0), text: ch }, shift: false };
+  // 기호: 미국 자판의 실제 키(code·keyCode)로 보낸다. 키 정보가 비어 있으면(code '', keyCode 0) 사람이 친 입력이 아닌 티가 난다
+  const p = PUNCT[ch];
+  if (p) return { def: { key: ch, code: p[0], keyCode: p[1], text: ch }, shift: p[2] };
   return { def: { key: ch, code: '', keyCode: 0, text: ch }, shift: false };
 }
+
+/** 기호 → [code, Windows 가상 키 번호, Shift 필요] (미국 자판). */
+const PUNCT: Record<string, [string, number, boolean]> = {
+  '-': ['Minus', 189, false], '_': ['Minus', 189, true], '=': ['Equal', 187, false], '+': ['Equal', 187, true],
+  '[': ['BracketLeft', 219, false], '{': ['BracketLeft', 219, true], ']': ['BracketRight', 221, false], '}': ['BracketRight', 221, true],
+  '\\': ['Backslash', 220, false], '|': ['Backslash', 220, true], ';': ['Semicolon', 186, false], ':': ['Semicolon', 186, true],
+  "'": ['Quote', 222, false], '"': ['Quote', 222, true], ',': ['Comma', 188, false], '<': ['Comma', 188, true],
+  '.': ['Period', 190, false], '>': ['Period', 190, true], '/': ['Slash', 191, false], '?': ['Slash', 191, true],
+  '`': ['Backquote', 192, false], '~': ['Backquote', 192, true],
+  '!': ['Digit1', 49, true], '@': ['Digit2', 50, true], '#': ['Digit3', 51, true], '$': ['Digit4', 52, true], '%': ['Digit5', 53, true],
+  '^': ['Digit6', 54, true], '&': ['Digit7', 55, true], '*': ['Digit8', 56, true], '(': ['Digit9', 57, true], ')': ['Digit0', 48, true],
+};
 
 /** Shift를 누른 채 친 글자 (미국 자판 기준). 표에 없으면 그대로. */
 const SHIFTED: Record<string, string> = {

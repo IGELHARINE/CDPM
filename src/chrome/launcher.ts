@@ -97,6 +97,10 @@ async function startAndWait(slot: number, chrome: string, args: string[], name: 
   while (Date.now() < deadline) {
     const p = await probe(slot, 2000);
     if (p.state === 'chrome') return { pid, version: p.version };
+    if (p.state === 'other') {
+      try { process.kill(pid); } catch { /* 이미 끝남 */ }
+      throw new CdpmError(`Slot ${slot} port (${portOf(slot)}) was taken by another program while ${name} was starting. Close that program or use another slot.`);
+    }
     if (!pidAlive(pid)) {
       throw new CdpmError(
         `Slot ${slot} ${name} exited right after launch. ` +

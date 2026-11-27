@@ -23,7 +23,9 @@ function dockImage(slot: number): string {
   const png = encodePng(renderIcon(slot, SIZE), SIZE);
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, png);
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, png);
+    fs.renameSync(tmp, file);
     // 예전 디자인으로 저장해 둔 그림은 지운다
     for (const name of fs.readdirSync(path.dirname(file))) {
       if (name !== path.basename(file) && new RegExp(`^${slot}-dock-v\\d+\\.png$`).test(name)) fs.rmSync(path.join(path.dirname(file), name), { force: true });

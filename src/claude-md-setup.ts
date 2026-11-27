@@ -53,6 +53,10 @@ export function hasCdpmRules(file = claudeMdPath()): boolean {
 export function setupClaudeMd(file = claudeMdPath()): string {
   const current = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
   const a = current.indexOf(START), b = current.indexOf(END);
+  // 표시 줄이 한쪽만 있거나 순서가 바뀌었으면 손대지 않는다 (새 블록을 덧붙이면 다음 갱신 때 그 사이의 사용자 글까지 바꿔 버린다)
+  if ((a >= 0) !== (b >= 0) || (a >= 0 && b < a) || current.indexOf(START, a + 1) >= 0) {
+    return `CLAUDE.md의 CDPM 규칙 표시 줄이 짝이 맞지 않아 건드리지 않았어요 (${file}). "${START}"와 "${END}" 사이를 지우고 다시 실행해 주세요.`;
+  }
   let next: string;
   if (a >= 0 && b > a) next = current.slice(0, a) + CDPM_RULES + current.slice(b + END.length);
   else next = current + (current && !current.endsWith('\n') ? '\n' : '') + (current ? '\n' : '') + CDPM_RULES + '\n';

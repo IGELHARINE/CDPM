@@ -120,6 +120,22 @@ describe('요청 막기: CDP 단계에서 모든 경로', () => {
     assert.equal(seen.img, 'load');
   });
 
+  it('업체 규칙은 지금 사이트 자신의 요청은 막지 않고, 다른 사이트로 옮기면 다시 막는다', async () => {
+    // 수집 서버(127.0.0.1)를 "업체"로 친 규칙. 127.0.0.1 페이지에서는 자기 사이트라 막지 않는다
+    await s.network.setRules([{ pattern: `*${C}/collect*`, agent: 't', at: '', label: 'test vendor', thirdParty: true }]);
+    await visit();
+    assert.ok(hits.get('fetch'), '자기 사이트 요청을 막음');
+    // localhost 페이지(다른 사이트)로 가면 같은 규칙이 막아야 한다 (예전 사이트가 남아 있으면 안 막힘)
+    hits.clear();
+    const other = S.replace('127.0.0.1', 'localhost');
+    await s.send('Page.navigate', { url: other });
+    for (let i = 0; i < 40 && !ALIVE.every((k) => hits.get(k)); i++) await sleep(150);
+    await sleep(1200);
+    await s.send('Page.navigate', { url: 'about:blank' });
+    await sleep(300);
+    assert.equal(hits.get('fetch') ?? 0, 0, '다른 사이트로 옮긴 뒤에도 업체 요청이 나감');
+  });
+
   it('규칙을 풀면 다시 나간다 (공유 워커 포함)', async () => {
     await s.network.setRules([]);
     await visit();

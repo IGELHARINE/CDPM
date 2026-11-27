@@ -44,11 +44,17 @@ export async function probe(slot: number, timeoutMs = 1500): Promise<ProbeResult
 
 /** 탭(page) 목록. Chrome이 돌려주는 순서 그대로 (첫 번째가 가장 최근 활성 탭). */
 export async function listPages(slot: number, timeoutMs = 10_000): Promise<PageTarget[]> {
+  return (await listPagesAndPrints(slot, timeoutMs)).pages;
+}
+
+/** 탭 목록과 인쇄 미리보기를 한 번에 (관제 화면이 1초마다 둘 다 볼 때 요청을 한 번으로). */
+export async function listPagesAndPrints(slot: number, timeoutMs = 10_000): Promise<{ pages: PageTarget[]; prints: PageTarget[] }> {
   const res = await fetch(`http://127.0.0.1:${portOf(slot)}/json/list`, { signal: AbortSignal.timeout(timeoutMs) });
-  const all = (await res.json()) as PageTarget[];
-  return all
-    .filter((t) => t.type === 'page' && !t.url.startsWith('devtools://') && !isPrintPreview(t))
-    .map((t) => ({ ...t, title: decodeEntities(t.title) }));
+  const all = ((await res.json()) as PageTarget[]).map((t) => ({ ...t, title: decodeEntities(t.title) }));
+  return {
+    pages: all.filter((t) => t.type === 'page' && !t.url.startsWith('devtools://') && !isPrintPreview(t)),
+    prints: all.filter(isPrintPreview),
+  };
 }
 
 /**

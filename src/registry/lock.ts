@@ -6,6 +6,8 @@ import { pidAlive, sleep } from '../util.js';
 const RETRY_MS = 30;
 /** 잠금 파일을 만든 직후 PID를 쓰기 전의 아주 짧은 순간만 봐주는 시간 (PID 확인이 불가능할 때만 쓰임) */
 const UNREADABLE_GRACE_MS = 5000;
+/** 잡은 프로세스 번호가 살아 있어도 이보다 오래된 잠금은 버려진 것으로 본다 (Windows가 죽은 프로세스의 번호를 다른 프로그램에 다시 준 경우). 가장 긴 조작(10분 기다리기)보다 길게 */
+const MAX_LOCK_AGE_MS = 15 * 60_000;
 
 export class LockTimeoutError extends Error {}
 
@@ -80,7 +82,7 @@ export function removeIfOwnerDead(lockPath: string) {
   try {
     const owner = Number(fs.readFileSync(lockPath, 'utf8'));
     if (owner > 0) {
-      if (!pidAlive(owner)) fs.unlinkSync(lockPath);
+      if (!pidAlive(owner) || Date.now() - fs.statSync(lockPath).mtimeMs > MAX_LOCK_AGE_MS) fs.unlinkSync(lockPath);
       return;
     }
     // PID를 아직 못 읽음 (방금 만들어진 파일이거나 깨진 파일): 깨진 파일만 오래되면 정리

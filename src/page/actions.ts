@@ -201,6 +201,68 @@ async function locate(s: PageSession, t: RefTarget): Promise<Located> {
   return { fs, dx: parent.dx + content[0], dy: parent.dy + content[1] };
 }
 
+/**
+ * 다른 사이트 iframe 안 요소의 화면 위치 차이를 지금 화면 기준으로 다시 잰다 (스크롤하지 않음).
+ * iframe 안에서 요소를 화면에 보이게 하면 바깥 페이지도 같이 스크롤될 수 있어서, 처음 잰 값은 맞지 않을 수 있다.
+ */
+async function frameOffset(s: PageSession, t: RefTarget): Promise<{ dx: number; dy: number }> {
+  if (!t.targetId || !t.owner) return { dx: 0, dy: 0 };
+  const parent = await frameOffset(s, t.owner);
+  const parentFs = t.owner.targetId ? await pageSession(s.slot, t.owner.targetId) : s;
+  const { model: { content } } = await send<{ model: { content: number[] } }>(parentFs, 'DOM.getBoxModel', { backendNodeId: t.owner.backendNodeId });
+  return { dx: parent.dx + content[0], dy: parent.dy + content[1] };
+}
+
+/**
+ * 화면 좌표(x, y)에 있는 요소. DOM.getNodeForLocation은 문서 기준 좌표를 받으므로 스크롤한 만큼을 더해 묻는다
+ * (화면 좌표 그대로 물으면 스크롤된 페이지에서 "아무것도 없음"이 나와, 가림 확인이 조용히 건너뛰어졌다: 실측).
+ * 이 연결에서 문서 구조를 아직 안 받았으면 맨 위만 받고 다시 묻는다. 끝내 모르면 undefined.
+ */
+async function nodeAt(sess: PageSession, x: number, y: number): Promise<number | undefined> {
+  const vp = (await send<{ cssVisualViewport: { pageX: number; pageY: number } }>(sess, 'Page.getLayoutMetrics', {}).catch((e) => {
+    if (e instanceof DialogInterrupt) throw e;
+    return undefined;
+  }))?.cssVisualViewport;
+  const at = { x: Math.round(x + (vp?.pageX ?? 0)), y: Math.round(y + (vp?.pageY ?? 0)), includeUserAgentShadowDOM: true, ignorePointerEventsNone: true };
+  for (let i = 0; i < 2; i++) {
+    try {
+      return (await send<{ backendNodeId: number }>(sess, 'DOM.getNodeForLocation', at)).backendNodeId;
+    } catch (e) {
+      if (e instanceof DialogInterrupt) throw e;
+      if (i === 0) await send(sess, 'DOM.getDocument', { depth: 0 }).catch(() => undefined);
+    }
+  }
+  return undefined;
+}
+
+/** 맨 바깥 페이지에서 iframe 안 요소를 품은 iframe 요소 (그 자리를 바깥 페이지의 다른 것이 덮고 있는지 볼 때). */
+function topOwner(t: RefTarget): RefTarget | undefined {
+  let o = t.owner;
+  while (o?.owner) o = o.owner;
+  return o;
+}
+
+/** 바깥 페이지의 그 자리에 iframe이 아닌 다른 것(팝업·덮개)이 있으면 그 설명. iframe 안 요소를 누를 때만 쓴다. */
+async function coveredOnTop(s: PageSession, t: RefTarget, x: number, y: number): Promise<string | undefined> {
+  const owner = topOwner(t);
+  if (!owner) return undefined;
+  const hit = await nodeAt(s, x, y);
+  if (hit === undefined || hit === owner.backendNodeId) return undefined;
+  try {
+    const obj = await objectOf(s, { backendNodeId: hit, frameId: owner.frameId });
+    return await callOn<string | undefined>(s, obj, `function () {
+      if (this.nodeName === 'IFRAME' || this.nodeName === 'FRAME') return undefined;
+      const el = this.nodeType === 1 ? this : this.parentElement;
+      if (!el) return undefined;
+      const label = (el.getAttribute('aria-label') || el.innerText || '').trim().slice(0, 40);
+      return '<' + el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + '>' + (label ? ' "' + label + '"' : '');
+    }`);
+  } catch (e) {
+    if (e instanceof DialogInterrupt) throw e;
+    return undefined;
+  }
+}
+
 /** 요소를 isolated world 객체로 가져온다. */
 async function objectOf(s: PageSession, t: RefTarget): Promise<string> {
   try {
@@ -320,15 +382,8 @@ type Cover = { blocked: string } | { overlay: string; href: string } | null;
  * 막지 않고 overlay로 돌려준다 (구글 뉴스 카드 등).
  */
 async function coveringElement(s: PageSession, t: RefTarget, targetObj: string, x: number, y: number): Promise<Cover> {
-  let hit: number;
-  try {
-    ({ backendNodeId: hit } = await send<{ backendNodeId: number }>(s, 'DOM.getNodeForLocation', {
-      x: Math.round(x), y: Math.round(y), includeUserAgentShadowDOM: true, ignorePointerEventsNone: true,
-    }));
-  } catch (e) {
-    if (e instanceof DialogInterrupt) throw e;
-    return null; // 확인 불가 → 그냥 클릭
-  }
+  const hit = await nodeAt(s, x, y);
+  if (hit === undefined) return null; // 확인 불가 → 그냥 클릭
   if (hit === t.backendNodeId) return null;
   let hitObj: string;
   try {
@@ -393,7 +448,8 @@ async function settleAfter(s: PageSession, action: () => Promise<void>): Promise
   let wake: () => void = () => {};
   const offs = [
     s.conn.on('Page.frameStartedNavigating', (p) => {
-      if (p.navigationType !== 'sameDocument' && (!s.mainFrameId || p.frameId === s.mainFrameId)) { started = true; wake(); }
+      // 같은 문서 안 이동(해시·history.pushState·SPA의 history.back)은 새 문서를 기다릴 일이 아니다 (기다리면 30초 '로딩 중'이 된다)
+      if (!/SameDocument$/i.test(String(p.navigationType)) && (!s.mainFrameId || p.frameId === s.mainFrameId)) { started = true; wake(); }
     }),
     s.conn.on('Page.frameRequestedNavigation', (p) => {
       // 새 탭·새 창으로 열리는 링크(target=_blank 등)는 이 탭에서 이동하지 않는다 (새 탭은 탭 목록 알림으로 따로 알린다)
@@ -435,11 +491,15 @@ async function waitLoad(s: PageSession, needCommit: boolean, maxMs = 30_000): Pr
   let lastActivity = Date.now();
   let download = false;
   let navigated = false;
+  let stayed = false;
   const bump = () => { lastActivity = Date.now(); };
   const offs = [
     // 이동하려던 주소가 파일 다운로드로 바뀌면 페이지는 그대로 남는다 → 바로 끝낸다 (로딩을 기다리지 않음)
     s.conn.on('Page.downloadWillBegin', () => { download = true; }),
     s.conn.on('Page.frameNavigated', (p) => { if (!p.frame.parentId) navigated = true; }),
+    // 이동을 요청했지만 새 문서 없이 끝남: 같은 문서 안 이동이었거나, 취소됐거나(204 응답 등), 다른 이동에 밀림
+    s.conn.on('Page.navigatedWithinDocument', (p) => { if (!s.mainFrameId || p.frameId === s.mainFrameId) stayed = true; }),
+    s.conn.on('Page.frameStoppedLoading', (p) => { if (!s.mainFrameId || p.frameId === s.mainFrameId) stayed = true; }),
     s.conn.on('Page.loadEventFired', () => { loaded = true; }),
     s.conn.on('Page.domContentEventFired', () => { dcl = true; bump(); }),
     s.conn.on('Network.requestWillBeSent', bump),
@@ -448,12 +508,14 @@ async function waitLoad(s: PageSession, needCommit: boolean, maxMs = 30_000): Pr
   ];
   try {
     if (needCommit) {
-      while (!navigated && !loaded && !download && Date.now() < until) {
+      while (!navigated && !loaded && !download && !stayed && !s.dialog && Date.now() < until) {
         stopIfPaused(s);
         if (downloadStartedSince(s.slot, began)) download = true;
         else await sleep(50);
       }
       if (download) return 'download';
+      // 알림창(떠나기 확인 등)이 떴거나 새 문서 없이 끝났으면 기다리지 않는다
+      if (s.dialog || (stayed && !navigated && !loaded)) return 'complete';
       if (!navigated && !loaded) return 'timeout';
     }
     // 이미 끝났을 수도 있으니 한 번은 현재 상태를 직접 확인
@@ -495,9 +557,14 @@ export async function click(s: PageSession, agent: string, ref: string, double =
     }
     const visible = (await s.visibility()) === 'visible';
     const local = await clickPoint(fs, t.backendNodeId);
-    const x = local.x + dx, y = local.y + dy;
+    // iframe 안 요소: 요소를 보이게 하느라 바깥 페이지가 스크롤됐을 수 있으니 위치 차이를 다시 잰다
+    const off = fs === s ? { dx, dy } : await frameOffset(s, t).catch(() => ({ dx, dy }));
+    const x = local.x + off.dx, y = local.y + off.dy;
     const cover = await coveringElement(fs, t, obj, local.x, local.y);
     if (cover && 'blocked' in cover) throw new CdpmError(`Not clicked: ${cover.blocked} is covering [${ref}]. Close the popup or scroll, then retry.`);
+    // iframe 안 요소인데 바깥 페이지의 팝업·덮개가 그 자리를 가리고 있으면 누르지 않는다
+    const topCover = fs === s ? undefined : await coveredOnTop(s, t, x, y);
+    if (topCover) throw new CdpmError(`Not clicked: ${topCover} on the page is covering the frame that holds [${ref}]. Close the popup or scroll, then retry.`);
     const overlayExt = cover && cover.href ? externalScheme(cover.href) : undefined;
     if (overlayExt) {
       throw new CdpmError(`Not clicked: the link covering [${ref}] is a ${overlayExt} link (${cover!.href.slice(0, 80)}); clicking would launch another program on the user's PC.`);
@@ -605,11 +672,15 @@ async function typeChars(s: PageSession, text: string) {
   for (const ch of text.replace(/\r\n?/g, '\n')) {
     const { def, shift } = charKey(ch);
     const modifiers = shift ? 8 : 0;
+    // Shift가 필요한 글자는 사람처럼 Shift를 먼저 누르고 마지막에 뗀다 (Shift 누름 없이 대문자만 오면 티가 난다)
+    const SHIFT = { key: 'Shift', code: 'ShiftLeft', windowsVirtualKeyCode: 16 };
+    if (shift) await send(s, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', ...SHIFT, modifiers: 8 });
     await send(s, 'Input.dispatchKeyEvent', {
       type: 'keyDown', key: def.key, code: def.code, windowsVirtualKeyCode: def.keyCode, modifiers,
       text: def.text ?? ch, unmodifiedText: def.text ?? ch,
     });
     await send(s, 'Input.dispatchKeyEvent', { type: 'keyUp', key: def.key, code: def.code, windowsVirtualKeyCode: def.keyCode, modifiers });
+    if (shift) await send(s, 'Input.dispatchKeyEvent', { type: 'keyUp', ...SHIFT, modifiers: 0 });
   }
 }
 
@@ -636,7 +707,8 @@ export async function type(s: PageSession, agent: string, ref: string, text: str
       if (e instanceof DialogInterrupt) throw e;
       // 포커스가 안 되는 요소면 클릭으로 포커스
       const { x, y } = await clickPoint(fs, t.backendNodeId);
-      await mouseClick(s, x + dx, y + dy, 1, (await s.visibility()) === 'visible');
+      const off = fs === s ? { dx, dy } : await frameOffset(s, t).catch(() => ({ dx, dy }));
+      await mouseClick(s, x + off.dx, y + off.dy, 1, (await s.visibility()) === 'visible');
     }
     if (clear) {
       await callOn(fs, obj, `function () {
@@ -876,7 +948,8 @@ export async function hover(s: PageSession, agent: string, ref: string): Promise
   const t = targetOf(s, agent, ref);
   const { fs, dx, dy } = await locate(s, t);
   const p = await clickPoint(fs, t.backendNodeId);
-  await send(s, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x + dx, y: p.y + dy, button: 'none' });
+  const off = fs === s ? { dx, dy } : await frameOffset(s, t).catch(() => ({ dx, dy }));
+  await send(s, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x + off.dx, y: p.y + off.dy, button: 'none' });
   // 메뉴가 그려질 시간: 다음 프레임 두 번
   await fs.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))', { awaitPromise: true, timeoutMs: 3000 }).catch(() => undefined);
   return `Hovered [${ref}]`;
@@ -1096,6 +1169,7 @@ export async function waitForEnabled(s: PageSession, agent: string, ref: string,
   }`;
   const until = Date.now() + timeoutSec * 1000;
   let obj: string | undefined;
+  let gone = 0;
   try {
     while (Date.now() < until) {
       await s.ensureNoDialog();
@@ -1105,10 +1179,12 @@ export async function waitForEnabled(s: PageSession, agent: string, ref: string,
       const st = await callOn<string>(fs, obj, check).catch(() => 'gone');
       if (st === 'on') return `Now enabled: [${ref}]`;
       if (st === 'gone') {
-        // 화면이 다시 그려지며 요소가 바뀌었을 수 있다 → 같은 ref로 한 번 더 찾아보고, 없으면 오류
+        // 화면이 다시 그려지며 요소가 바뀌었을 수 있다 → 같은 ref로 다시 찾아본다. 몇 번 연속 페이지에 없으면
+        // 시간이 다 될 때까지(최대 10분) 기다리지 않고 바로 알린다 (예전 ref라 다시 켜질 일이 없다)
         obj = undefined;
         await objectOf(fs, t);
-      }
+        if (++gone >= 3) throw new CdpmError(`[${ref}] is no longer on the page (it was re-rendered or removed). Take a new snapshot and use the new ref.`);
+      } else gone = 0;
       await sleep(100);
     }
   } finally {
@@ -1266,6 +1342,8 @@ export async function extractText(s: PageSession, agent: string, ref: string | u
   text = text.replace(/\n{3,}/g, '\n\n');
   if (!text) return '(no text)';
   const p = paginate(text, page);
+  // 한 쪽에 다 들어가면 꼬리글을 붙이지 않는다 (읽을 때마다 붙는 글을 줄임)
+  if (p.pages <= 1) return p.body;
   return `${p.body}\n\n— page ${p.page}/${p.pages} (${text.length.toLocaleString()} chars)${p.page < p.pages ? ` · next: page=${p.page + 1}` : ' · end'}`;
 }
 
